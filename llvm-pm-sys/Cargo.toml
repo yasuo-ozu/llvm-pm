@@ -1,0 +1,11 @@
+[package]
+name = "llvm-pm-sys"
+version = "0.1.0"
+edition = "2021"
+description = "Raw FFI bindings for LLVM new PassManager C++ stubs"
+license = "MIT OR Apache-2.0"
+links = "llvm_pm"
+
+[build-dependencies]
+cc = "1"
+bindgen = "0.71"

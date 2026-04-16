@@ -1,0 +1,3 @@
+[workspace]
+members = ["llvm-pm-sys", "llvm-pm"]
+resolver = "2"

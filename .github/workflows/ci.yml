@@ -1,0 +1,142 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test-linux:
+    name: Linux / LLVM ${{ matrix.llvm-version }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        llvm-version: [18, 19, 20]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install LLVM ${{ matrix.llvm-version }}
+        run: |
+          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc
+          # Get Ubuntu codename
+          CODENAME=$(lsb_release -cs)
+          echo "deb http://apt.llvm.org/${CODENAME}/ llvm-toolchain-${CODENAME}-${{ matrix.llvm-version }} main" | \
+            sudo tee /etc/apt/sources.list.d/llvm.list
+          sudo apt-get update
+          sudo apt-get install -y \
+            llvm-${{ matrix.llvm-version }}-dev \
+            libclang-${{ matrix.llvm-version }}-dev \
+            clang-${{ matrix.llvm-version }}
+
+      - name: Set LLVM environment
+        run: |
+          echo "LLVM_CONFIG=llvm-config-${{ matrix.llvm-version }}" >> $GITHUB_ENV
+          echo "LIBCLANG_PATH=/usr/lib/llvm-${{ matrix.llvm-version }}/lib" >> $GITHUB_ENV
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry and build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: linux-llvm${{ matrix.llvm-version }}-${{ hashFiles('**/Cargo.toml') }}
+          restore-keys: |
+            linux-llvm${{ matrix.llvm-version }}-
+
+      - name: Build
+        run: cargo build --workspace --verbose
+
+      - name: Test
+        run: cargo test --workspace --verbose
+
+  test-windows:
+    name: Windows (MSVC) / LLVM ${{ matrix.llvm-version }}
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - llvm-version: 18
+            llvm-tag: "18.1.8"
+          - llvm-version: 19
+            llvm-tag: "19.1.7"
+          - llvm-version: 20
+            llvm-tag: "20.1.4"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install LLVM ${{ matrix.llvm-tag }}
+        run: |
+          $url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-${{ matrix.llvm-tag }}/LLVM-${{ matrix.llvm-tag }}-win64.exe"
+          Invoke-WebRequest -Uri $url -OutFile llvm-installer.exe
+          Start-Process -Wait -FilePath .\llvm-installer.exe -ArgumentList "/S", "/D=C:\LLVM"
+        shell: pwsh
+
+      - name: Set LLVM environment
+        run: |
+          echo "LLVM_DIR=C:\LLVM" >> $env:GITHUB_ENV
+          echo "LIBCLANG_PATH=C:\LLVM\lib" >> $env:GITHUB_ENV
+          echo "C:\LLVM\bin" >> $env:GITHUB_PATH
+        shell: pwsh
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable-msvc
+
+      - name: Cache cargo registry and build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: windows-llvm${{ matrix.llvm-version }}-${{ hashFiles('**/Cargo.toml') }}
+          restore-keys: |
+            windows-llvm${{ matrix.llvm-version }}-
+
+      - name: Build
+        run: cargo build --workspace --verbose
+
+      - name: Test
+        run: cargo test --workspace --verbose
+
+  fmt-clippy:
+    name: Format & Clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install LLVM 18
+        run: |
+          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc
+          CODENAME=$(lsb_release -cs)
+          echo "deb http://apt.llvm.org/${CODENAME}/ llvm-toolchain-${CODENAME}-18 main" | \
+            sudo tee /etc/apt/sources.list.d/llvm.list
+          sudo apt-get update
+          sudo apt-get install -y llvm-18-dev libclang-18-dev clang-18
+
+      - name: Set LLVM environment
+        run: |
+          echo "LLVM_CONFIG=llvm-config-18" >> $GITHUB_ENV
+          echo "LIBCLANG_PATH=/usr/lib/llvm-18/lib" >> $GITHUB_ENV
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        run: cargo clippy --workspace -- -D warnings
