@@ -1,9 +1,0 @@
-[package]
-name = "llvm-pm"
-version = "0.1.0"
-edition = "2021"
-description = "Safe Rust wrapper for LLVM new PassManager"
-license = "MIT OR Apache-2.0"
-
-[dependencies]
-llvm-pm-sys = { path = "../llvm-pm-sys" }

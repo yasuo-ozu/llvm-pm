@@ -1,0 +1,66 @@
+name: install-llvm
+description: "Install pre-built LLVM binaries (Linux apt, macOS brew, Windows official installer)"
+
+inputs:
+  version:
+    description: "Full LLVM version, e.g. 18.1.8"
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Parse LLVM version
+      shell: bash
+      run: |
+        VERSION="${{ inputs.version }}"
+        MAJOR="${VERSION%%.*}"
+        MINOR="$(echo "$VERSION" | cut -d. -f2)"
+        echo "LLVM_MAJOR=${MAJOR}" >> "$GITHUB_ENV"
+        echo "LLVM_MINOR=${MINOR}" >> "$GITHUB_ENV"
+        echo "LLVM_MAJMIN=${MAJOR}${MINOR}" >> "$GITHUB_ENV"
+
+    - name: Install LLVM (Linux)
+      if: runner.os == 'Linux'
+      shell: bash
+      run: |
+        wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc > /dev/null
+        . /etc/os-release
+        echo "deb http://apt.llvm.org/${VERSION_CODENAME}/ llvm-toolchain-${VERSION_CODENAME}-${LLVM_MAJOR} main" | sudo tee /etc/apt/sources.list.d/llvm-${LLVM_MAJOR}.list
+        sudo apt-get update -qq
+        sudo apt-get install -qq -y \
+          "llvm-${LLVM_MAJOR}-dev" \
+          "libclang-${LLVM_MAJOR}-dev" \
+          "clang-${LLVM_MAJOR}" \
+          libffi-dev \
+          libxml2-dev
+        echo "LLVM_PREFIX=/usr/lib/llvm-${LLVM_MAJOR}" >> "$GITHUB_ENV"
+        echo "LLVM_CONFIG=llvm-config-${LLVM_MAJOR}" >> "$GITHUB_ENV"
+        echo "LIBCLANG_PATH=/usr/lib/llvm-${LLVM_MAJOR}/lib" >> "$GITHUB_ENV"
+
+    - name: Install LLVM (macOS)
+      if: runner.os == 'macOS'
+      shell: bash
+      run: |
+        brew install "llvm@${LLVM_MAJOR}"
+        LLVM_PREFIX="$(brew --prefix "llvm@${LLVM_MAJOR}")"
+        echo "LLVM_PREFIX=${LLVM_PREFIX}" >> "$GITHUB_ENV"
+        echo "LLVM_CONFIG=${LLVM_PREFIX}/bin/llvm-config" >> "$GITHUB_ENV"
+        echo "LIBCLANG_PATH=${LLVM_PREFIX}/lib" >> "$GITHUB_ENV"
+
+    - name: Install LLVM (Windows)
+      if: runner.os == 'Windows'
+      shell: pwsh
+      run: |
+        $url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-${{ inputs.version }}/LLVM-${{ inputs.version }}-win64.exe"
+        Invoke-WebRequest -Uri $url -OutFile llvm-installer.exe
+        Start-Process -Wait -FilePath .\llvm-installer.exe -ArgumentList "/S", "/D=C:\LLVM"
+        echo "LLVM_PREFIX=C:\LLVM" >> $env:GITHUB_ENV
+        echo "LLVM_CONFIG=C:\LLVM\bin\llvm-config.exe" >> $env:GITHUB_ENV
+        echo "LIBCLANG_PATH=C:\LLVM\lib" >> $env:GITHUB_ENV
+        echo "C:\LLVM\bin" >> $env:GITHUB_PATH
+
+    - name: Set LLVM environment
+      shell: bash
+      run: |
+        echo "LLVM_SYS_${LLVM_MAJMIN}_PREFIX=${LLVM_PREFIX}" >> "$GITHUB_ENV"
+        "${LLVM_CONFIG}" --version

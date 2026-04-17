@@ -1,3 +1,83 @@
 [workspace]
-members = ["llvm-pm-sys", "llvm-pm"]
+members = ["llvm-pm-sys"]
 resolver = "2"
+
+[package]
+name = "llvm-pm"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.65"
+license = "MIT"
+repository = "https://github.com/yasuo-ozu/llvm-pm"
+description = "Safe Rust wrapper for LLVM new PassManager"
+readme = "README.md"
+keywords = ["llvm", "pass-manager", "compiler", "optimization"]
+categories = ["compilers", "development-tools"]
+
+[features]
+default = ["llvm18-0", "llvm-plugin-crate"]
+llvm-plugin-crate = ["llvm-plugin"]
+llvm10-0 = [
+  "llvm-pm-sys/llvm10-0",
+  "inkwell_05",
+  "inkwell_05/llvm10-0",
+  "llvm-plugin?/llvm10-0",
+]
+llvm11-0 = [
+  "llvm-pm-sys/llvm11-0",
+  "inkwell_05",
+  "inkwell_05/llvm11-0",
+  "llvm-plugin?/llvm11-0",
+]
+llvm12-0 = [
+  "llvm-pm-sys/llvm12-0",
+  "inkwell_05",
+  "inkwell_05/llvm12-0",
+  "llvm-plugin?/llvm12-0",
+]
+llvm13-0 = [
+  "llvm-pm-sys/llvm13-0",
+  "inkwell_05",
+  "inkwell_05/llvm13-0",
+  "llvm-plugin?/llvm13-0",
+]
+llvm14-0 = [
+  "llvm-pm-sys/llvm14-0",
+  "inkwell_05",
+  "inkwell_05/llvm14-0",
+  "llvm-plugin?/llvm14-0",
+]
+llvm15-0 = [
+  "llvm-pm-sys/llvm15-0",
+  "inkwell_05",
+  "inkwell_05/llvm15-0",
+  "llvm-plugin?/llvm15-0",
+]
+llvm16-0 = [
+  "llvm-pm-sys/llvm16-0",
+  "inkwell_05",
+  "inkwell_05/llvm16-0",
+  "llvm-plugin?/llvm16-0",
+]
+llvm17-0 = [
+  "llvm-pm-sys/llvm17-0",
+  "inkwell_05",
+  "inkwell_05/llvm17-0",
+  "llvm-plugin?/llvm17-0",
+]
+llvm18-0 = [
+  "llvm-pm-sys/llvm18-0",
+  "inkwell_05",
+  "inkwell_05/llvm18-0",
+  "llvm-plugin?/llvm18-0",
+]
+llvm19-1 = ["llvm-pm-sys/llvm19-1", "inkwell_09", "inkwell_09/llvm19-1"]
+llvm20-1 = ["llvm-pm-sys/llvm20-1", "inkwell_09", "inkwell_09/llvm20-1"]
+llvm21-1 = ["llvm-pm-sys/llvm21-1", "inkwell_09", "inkwell_09/llvm21-1"]
+llvm22-1 = ["llvm-pm-sys/llvm22-1", "inkwell_09", "inkwell_09/llvm22-1"]
+
+[dependencies]
+llvm-pm-sys = { path = "./llvm-pm-sys", default-features = false, version = "0.1.0" }
+llvm-plugin = { version = "0.6", default-features = false, optional = true }
+inkwell_05 = { package = "inkwell", version = ">=0.5, <0.9", default-features = false, optional = true }
+inkwell_09 = { package = "inkwell", version = ">=0.9, <0.11", default-features = false, optional = true }
