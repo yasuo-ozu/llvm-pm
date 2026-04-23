@@ -4,6 +4,11 @@ use std::process::Command;
 
 fn main() {
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
+    let macos_sdk = if cfg!(target_os = "macos") {
+        detect_macos_sdk_path()
+    } else {
+        None
+    };
 
     // --- Locate LLVM (for include paths and cxxflags only) ---
     // LLVM library linking is handled by llvm-sys.
@@ -46,6 +51,8 @@ fn main() {
 
     if cfg!(target_env = "msvc") {
         // LLVM is built without RTTI and exceptions on MSVC
+        // LLVM 18+ headers require C++17 (e.g. std::optional).
+        build.flag("/std:c++17");
         build.flag("/EHs-c-");
         build.flag("/GR-");
     } else {
@@ -53,6 +60,10 @@ fn main() {
         build.flag("-fno-rtti");
         // Use C++17 (required by LLVM 18+)
         build.flag("-std=c++17");
+    }
+    if let Some(ref sdk) = macos_sdk {
+        build.flag("-isysroot");
+        build.flag(sdk);
     }
 
     build.compile("llvm_pm_stubs");
@@ -66,7 +77,7 @@ fn main() {
 
     // --- Bindgen ---
     // Blocklist LLVM types — they are provided by llvm-sys instead.
-    let bindings = bindgen::Builder::default()
+    let mut bindings = bindgen::Builder::default()
         .header("cpp/llvm_pm.h")
         .clang_arg(format!("-I{}", llvm.include_dir))
         .allowlist_function("llvm_pm_.*")
@@ -74,9 +85,11 @@ fn main() {
         .blocklist_type("LLVM.*")
         .generate_comments(true)
         .derive_debug(true)
-        .parse_callbacks(Box::new(bindgen::CargoCallbacks::new()))
-        .generate()
-        .expect("Failed to generate bindings");
+        .parse_callbacks(Box::new(bindgen::CargoCallbacks::new()));
+    if let Some(ref sdk) = macos_sdk {
+        bindings = bindings.clang_arg("-isysroot").clang_arg(sdk);
+    }
+    let bindings = bindings.generate().expect("Failed to generate bindings");
 
     bindings
         .write_to_file(out_dir.join("bindings.rs"))
@@ -87,6 +100,7 @@ fn main() {
     println!("cargo:rerun-if-changed=cpp/llvm_pm.cpp");
     println!("cargo:rerun-if-env-changed=LLVM_CONFIG");
     println!("cargo:rerun-if-env-changed=LLVM_DIR");
+    println!("cargo:rerun-if-env-changed=SDKROOT");
 }
 
 struct LlvmInfo {
@@ -155,7 +169,9 @@ fn find_llvm_msvc() -> LlvmInfo {
 /// Try versioned llvm-config names (llvm-config-22 .. llvm-config-10),
 /// falling back to plain `llvm-config`.
 fn detect_llvm_config_unix() -> String {
-    for ver in &["22", "21", "20", "19", "18", "17", "16", "15", "14", "13", "12", "11", "10"] {
+    for ver in &[
+        "22", "21", "20", "19", "18", "17", "16", "15", "14", "13", "12", "11", "10",
+    ] {
         let candidate = format!("llvm-config-{}", ver);
         if Command::new(&candidate).arg("--version").output().is_ok() {
             return candidate;
@@ -193,4 +209,21 @@ fn run_llvm_config(llvm_config: &str, args: &[&str]) -> String {
         panic!("`{} {}` failed: {}", llvm_config, args.join(" "), stderr);
     }
     String::from_utf8(output.stdout).unwrap().trim().to_string()
+}
+
+fn detect_macos_sdk_path() -> Option<String> {
+    if let Ok(sdkroot) = env::var("SDKROOT") {
+        if !sdkroot.is_empty() {
+            return Some(sdkroot);
+        }
+    }
+    let output = Command::new("xcrun")
+        .args(["--sdk", "macosx", "--show-sdk-path"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let sdk = String::from_utf8(output.stdout).ok()?.trim().to_string();
+    if sdk.is_empty() { None } else { Some(sdk) }
 }

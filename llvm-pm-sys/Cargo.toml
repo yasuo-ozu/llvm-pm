@@ -9,10 +9,25 @@ readme = "../README.md"
 keywords = ["llvm", "ffi", "pass-manager"]
 categories = ["external-ffi-bindings"]
 links = "llvm_pm"
-rust-version = "1.65"
+rust-version = "1.71"
 
 [features]
 default = ["llvm18-0"]
+no-llvm-linking = [
+  "llvm-sys-100?/no-llvm-linking",
+  "llvm-sys-110?/no-llvm-linking",
+  "llvm-sys-120?/no-llvm-linking",
+  "llvm-sys-130?/no-llvm-linking",
+  "llvm-sys-140?/no-llvm-linking",
+  "llvm-sys-150?/no-llvm-linking",
+  "llvm-sys-160?/no-llvm-linking",
+  "llvm-sys-170?/no-llvm-linking",
+  "llvm-sys-180?/no-llvm-linking",
+  "llvm-sys-191?/no-llvm-linking",
+  "llvm-sys-201?/no-llvm-linking",
+  "llvm-sys-211?/no-llvm-linking",
+  "llvm-sys-221?/no-llvm-linking",
+]
 llvm10-0 = ["llvm-sys-100"]
 llvm11-0 = ["llvm-sys-110"]
 llvm12-0 = ["llvm-sys-120"]
@@ -44,4 +59,6 @@ llvm-sys-221 = { package = "llvm-sys", version = "221", optional = true }
 
 [build-dependencies]
 cc = "1"
-bindgen = "0.69"
+bindgen = { version = "=0.69.5", default-features = false, features = [
+  "runtime",
+] }

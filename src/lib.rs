@@ -1,22 +1,4 @@
-//! Safe Rust wrapper for LLVM's new PassManager.
-//!
-//! Provides [`ModulePassManager`] and [`FunctionPassManager`] for running optimization
-//! passes on LLVM modules and functions using the new PassBuilder-based infrastructure
-//! (LLVM 10+).
-//!
-//! # Example
-//!
-//! ```ignore
-//! use inkwell::context::Context;
-//! use llvm_pm::{ModulePassManager, OptLevel};
-//!
-//! let context = Context::create();
-//! let module = context.create_module("my_module");
-//!
-//! let mut pm = ModulePassManager::with_opt_level(None, OptLevel::O2, None)
-//!     .expect("Failed to create pass manager");
-//! pm.run(&module).expect("Pass execution failed");
-//! ```
+#![doc = include_str!("../README.md")]
 
 #[cfg(any(
     feature = "llvm10-0",
@@ -44,7 +26,6 @@ pub mod traits;
 mod llvm_plugin_harness;
 
 use inkwell::values::AsValueRef;
-use std::cell::OnceCell;
 use std::collections::HashMap;
 use std::ffi::{c_void, CStr, CString};
 use std::fmt;
@@ -54,12 +35,12 @@ use std::mem::ManuallyDrop;
 use std::ptr;
 use std::sync::{Mutex, Once};
 
-pub use llvm_pm_sys::{LLVMBasicBlockRef, LLVMModuleRef, LLVMValueRef};
+use llvm_pm_sys::{LLVMBasicBlockRef, LLVMModuleRef, LLVMValueRef};
 use traits::{
     LlvmCgsccAnalysis, LlvmCgsccPass, LlvmFunctionPass, LlvmLoopAnalysis, LlvmLoopPass,
     LlvmModulePass, PreservedAnalyses,
 };
-pub type AnalysisKey = *const u8;
+type AnalysisKey = *const u8;
 
 #[cfg(all(
     feature = "llvm-plugin-crate",
@@ -82,7 +63,7 @@ pub struct ModuleAnalysisManager {
 impl ModuleAnalysisManager {
     /// # Safety
     /// `inner` must be a valid pointer to LLVM's `ModuleAnalysisManager`.
-    pub unsafe fn from_raw(inner: *mut c_void, from_analysis_id: Option<AnalysisKey>) -> Self {
+    pub unsafe fn from_raw(inner: *mut c_void, from_analysis_id: Option<*const u8>) -> Self {
         Self {
             inner,
             from_analysis_id,
@@ -635,56 +616,63 @@ impl Drop for LoopAnalysisEntry {
 unsafe impl Send for CgsccAnalysisEntry {}
 unsafe impl Send for LoopAnalysisEntry {}
 
-struct SyncOnceCell<T>(OnceCell<T>);
+type AnalysisPassMap<T> = HashMap<usize, HashMap<usize, T>>;
+type AnalysisCacheMap = HashMap<usize, HashMap<(usize, usize), usize>>;
 
-impl<T> SyncOnceCell<T> {
-    const fn new() -> Self {
-        Self(OnceCell::new())
-    }
+fn cgscc_analysis_passes() -> &'static Mutex<AnalysisPassMap<CgsccAnalysisEntry>> {
+    static INIT: Once = Once::new();
+    static mut CELL: *const Mutex<AnalysisPassMap<CgsccAnalysisEntry>> = ptr::null();
+    INIT.call_once(|| {
+        let value = Box::new(Mutex::new(HashMap::new()));
+        // SAFETY: `call_once` guarantees this assignment runs once.
+        unsafe {
+            CELL = Box::into_raw(value);
+        }
+    });
+    // SAFETY: `CELL` is initialized by `call_once` before returning, then never modified.
+    unsafe { CELL.as_ref().expect("cgscc registry initialized") }
 }
 
-// SAFETY: Access to initialization is synchronized externally via `Once`.
-// After initialization, only shared references are handed out and `T: Sync`.
-unsafe impl<T: Sync> Sync for SyncOnceCell<T> {}
-
-fn cgscc_analysis_passes() -> &'static Mutex<HashMap<usize, HashMap<usize, CgsccAnalysisEntry>>> {
+fn cgscc_analysis_cache() -> &'static Mutex<AnalysisCacheMap> {
     static INIT: Once = Once::new();
-    static CELL: SyncOnceCell<Mutex<HashMap<usize, HashMap<usize, CgsccAnalysisEntry>>>> =
-        SyncOnceCell::new();
+    static mut CELL: *const Mutex<AnalysisCacheMap> = ptr::null();
     INIT.call_once(|| {
-        let _ = CELL.0.set(Mutex::new(HashMap::new()));
+        let value = Box::new(Mutex::new(HashMap::new()));
+        // SAFETY: `call_once` guarantees this assignment runs once.
+        unsafe {
+            CELL = Box::into_raw(value);
+        }
     });
-    CELL.0.get().expect("cgscc registry initialized")
+    // SAFETY: `CELL` is initialized by `call_once` before returning, then never modified.
+    unsafe { CELL.as_ref().expect("cgscc cache initialized") }
 }
 
-fn cgscc_analysis_cache() -> &'static Mutex<HashMap<usize, HashMap<(usize, usize), usize>>> {
+fn loop_analysis_passes() -> &'static Mutex<AnalysisPassMap<LoopAnalysisEntry>> {
     static INIT: Once = Once::new();
-    static CELL: SyncOnceCell<Mutex<HashMap<usize, HashMap<(usize, usize), usize>>>> =
-        SyncOnceCell::new();
+    static mut CELL: *const Mutex<AnalysisPassMap<LoopAnalysisEntry>> = ptr::null();
     INIT.call_once(|| {
-        let _ = CELL.0.set(Mutex::new(HashMap::new()));
+        let value = Box::new(Mutex::new(HashMap::new()));
+        // SAFETY: `call_once` guarantees this assignment runs once.
+        unsafe {
+            CELL = Box::into_raw(value);
+        }
     });
-    CELL.0.get().expect("cgscc cache initialized")
+    // SAFETY: `CELL` is initialized by `call_once` before returning, then never modified.
+    unsafe { CELL.as_ref().expect("loop registry initialized") }
 }
 
-fn loop_analysis_passes() -> &'static Mutex<HashMap<usize, HashMap<usize, LoopAnalysisEntry>>> {
+fn loop_analysis_cache() -> &'static Mutex<AnalysisCacheMap> {
     static INIT: Once = Once::new();
-    static CELL: SyncOnceCell<Mutex<HashMap<usize, HashMap<usize, LoopAnalysisEntry>>>> =
-        SyncOnceCell::new();
+    static mut CELL: *const Mutex<AnalysisCacheMap> = ptr::null();
     INIT.call_once(|| {
-        let _ = CELL.0.set(Mutex::new(HashMap::new()));
+        let value = Box::new(Mutex::new(HashMap::new()));
+        // SAFETY: `call_once` guarantees this assignment runs once.
+        unsafe {
+            CELL = Box::into_raw(value);
+        }
     });
-    CELL.0.get().expect("loop registry initialized")
-}
-
-fn loop_analysis_cache() -> &'static Mutex<HashMap<usize, HashMap<(usize, usize), usize>>> {
-    static INIT: Once = Once::new();
-    static CELL: SyncOnceCell<Mutex<HashMap<usize, HashMap<(usize, usize), usize>>>> =
-        SyncOnceCell::new();
-    INIT.call_once(|| {
-        let _ = CELL.0.set(Mutex::new(HashMap::new()));
-    });
-    CELL.0.get().expect("loop cache initialized")
+    // SAFETY: `CELL` is initialized by `call_once` before returning, then never modified.
+    unsafe { CELL.as_ref().expect("loop cache initialized") }
 }
 
 fn preserved_to_c(pa: traits::PreservedAnalyses) -> std::ffi::c_int {
@@ -1162,7 +1150,6 @@ impl<'a> FunctionPassManager<'a> {
 
     /// Run the function passes on the given function.
     pub fn run(&mut self, function: inkwell::values::FunctionValue<'_>) -> Result<(), Error> {
-        use inkwell::values::AsValueRef;
         // SAFETY: self.raw is a valid PM handle. function.as_value_ref() returns a valid
         // LLVMValueRef. &mut self ensures exclusive access to stored passes.
         let err =

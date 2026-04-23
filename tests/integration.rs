@@ -4,14 +4,16 @@ use llvm_pm::inkwell::targets::{
     CodeModel, InitializationConfig, RelocMode, Target, TargetMachine,
 };
 use llvm_pm::inkwell::IntPredicate;
+use llvm_pm::traits::{
+    LlvmCgsccAnalysis, LlvmCgsccPass, LlvmFunctionAnalysis, LlvmFunctionPass, LlvmLoopAnalysis,
+    LlvmLoopPass, LlvmModuleAnalysis, LlvmModulePass, PreservedAnalyses,
+};
 use llvm_pm::{
-    CgsccAnalysisManager, FunctionPassManager, LlvmCgsccAnalysis, LlvmFunctionAnalysis,
-    LlvmLoopAnalysis, LlvmModuleAnalysis, LoopAnalysisManager, ModulePassManager, OptLevel,
-    Options, PreservedAnalyses,
+    CgsccAnalysisManager, FunctionPassManager, LoopAnalysisManager, ModulePassManager, OptLevel,
+    Options,
 };
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
-use std::thread;
 
 /// Helper: create a module with a simple `void @test_fn()` function.
 fn create_test_module() -> inkwell::module::Module<'static> {
@@ -299,7 +301,7 @@ struct FunctionCounter {
     count: Arc<AtomicU32>,
 }
 
-impl llvm_pm::LlvmModulePass for FunctionCounter {
+impl LlvmModulePass for FunctionCounter {
     fn run_pass(
         &self,
         module: &mut inkwell::module::Module<'_>,
@@ -337,7 +339,7 @@ static MODULE_PASS_RAN: AtomicU32 = AtomicU32::new(0);
 
 struct SimpleModulePass;
 
-impl llvm_pm::LlvmModulePass for SimpleModulePass {
+impl LlvmModulePass for SimpleModulePass {
     fn run_pass(
         &self,
         module: &mut inkwell::module::Module<'_>,
@@ -368,7 +370,7 @@ struct FnPassCounter {
     count: Arc<AtomicU32>,
 }
 
-impl llvm_pm::LlvmFunctionPass for FnPassCounter {
+impl LlvmFunctionPass for FnPassCounter {
     fn run_pass(
         &self,
         function: &mut inkwell::values::FunctionValue<'_>,
@@ -406,7 +408,7 @@ struct CgsccPassCounter {
     count: Arc<AtomicU32>,
 }
 
-impl llvm_pm::LlvmCgsccPass for CgsccPassCounter {
+impl LlvmCgsccPass for CgsccPassCounter {
     fn run_pass(
         &self,
         function: &mut inkwell::values::FunctionValue<'_>,
@@ -445,7 +447,7 @@ impl LlvmCgsccAnalysis for CgsccFnNameLenAnalysis {
         function.get_name().to_string_lossy().len()
     }
 
-    fn id() -> llvm_pm::AnalysisKey {
+    fn id() -> *const u8 {
         static ID: u8 = 0;
         &ID
     }
@@ -456,7 +458,7 @@ struct CgsccAnalysisUserPass {
     registered: Arc<AtomicU32>,
 }
 
-impl llvm_pm::LlvmCgsccPass for CgsccAnalysisUserPass {
+impl LlvmCgsccPass for CgsccAnalysisUserPass {
     fn run_pass(
         &self,
         function: &mut inkwell::values::FunctionValue<'_>,
@@ -496,10 +498,10 @@ struct LoopPassCounter {
     count: Arc<AtomicU32>,
 }
 
-impl llvm_pm::LlvmLoopPass for LoopPassCounter {
+impl LlvmLoopPass for LoopPassCounter {
     fn run_pass(
         &self,
-        loop_header: llvm_pm::LLVMBasicBlockRef,
+        loop_header: llvm_pm::traits::LLVMBasicBlockRef,
         _manager: &LoopAnalysisManager,
     ) -> PreservedAnalyses {
         let _ = loop_header;
@@ -529,13 +531,13 @@ impl LlvmLoopAnalysis for LoopHeaderNonNullAnalysis {
     type Result = bool;
     fn run_analysis(
         &self,
-        loop_header: llvm_pm::LLVMBasicBlockRef,
+        loop_header: llvm_pm::traits::LLVMBasicBlockRef,
         _manager: &LoopAnalysisManager,
     ) -> Self::Result {
         !loop_header.is_null()
     }
 
-    fn id() -> llvm_pm::AnalysisKey {
+    fn id() -> *const u8 {
         static ID: u8 = 0;
         &ID
     }
@@ -546,10 +548,10 @@ struct LoopAnalysisUserPass {
     registered: Arc<AtomicU32>,
 }
 
-impl llvm_pm::LlvmLoopPass for LoopAnalysisUserPass {
+impl LlvmLoopPass for LoopAnalysisUserPass {
     fn run_pass(
         &self,
-        loop_header: llvm_pm::LLVMBasicBlockRef,
+        loop_header: llvm_pm::traits::LLVMBasicBlockRef,
         manager: &LoopAnalysisManager,
     ) -> PreservedAnalyses {
         if self
@@ -600,7 +602,7 @@ impl LlvmModuleAnalysis for ModuleAnalysisCounter {
         self.count.fetch_add(1, Ordering::SeqCst);
     }
 
-    fn id() -> llvm_pm::AnalysisKey {
+    fn id() -> *const u8 {
         static ID: u8 = 0;
         &ID
     }
@@ -611,9 +613,12 @@ fn test_module_analysis_pass() {
     let module = create_test_module();
     let count = Arc::new(AtomicU32::new(0));
     let mut pm = ModulePassManager::new(None, None).expect("Failed to create empty PM");
-    pm.add_pass((ModuleAnalysisCounter {
-        count: count.clone(),
-    }).into_pass());
+    pm.add_pass(
+        (ModuleAnalysisCounter {
+            count: count.clone(),
+        })
+        .into_pass(),
+    );
     pm.run(&module).expect("Failed to run module analysis pass");
     assert_eq!(count.load(Ordering::SeqCst), 1);
 }
@@ -633,7 +638,7 @@ impl LlvmFunctionAnalysis for FunctionAnalysisCounter {
         self.count.fetch_add(1, Ordering::SeqCst);
     }
 
-    fn id() -> llvm_pm::AnalysisKey {
+    fn id() -> *const u8 {
         static ID: u8 = 0;
         &ID
     }
@@ -644,9 +649,12 @@ fn test_function_analysis_pass() {
     let (_module, func) = create_add_module();
     let count = Arc::new(AtomicU32::new(0));
     let mut fpm = FunctionPassManager::new(None, None).expect("Failed to create empty FPM");
-    fpm.add_pass((FunctionAnalysisCounter {
-        count: count.clone(),
-    }).into_pass());
+    fpm.add_pass(
+        (FunctionAnalysisCounter {
+            count: count.clone(),
+        })
+        .into_pass(),
+    );
     fpm.run(func).expect("Failed to run function analysis pass");
     assert_eq!(count.load(Ordering::SeqCst), 1);
 }
@@ -666,7 +674,7 @@ impl LlvmCgsccAnalysis for CgsccAnalysisCounter {
         self.count.fetch_add(1, Ordering::SeqCst);
     }
 
-    fn id() -> llvm_pm::AnalysisKey {
+    fn id() -> *const u8 {
         static ID: u8 = 0;
         &ID
     }
@@ -677,9 +685,12 @@ fn test_cgscc_analysis_pass() {
     let (module, _func) = create_add_module();
     let count = Arc::new(AtomicU32::new(0));
     let mut pm = ModulePassManager::new(None, None).expect("Failed to create empty PM");
-    pm.add_cgscc_pass((CgsccAnalysisCounter {
-        count: count.clone(),
-    }).into_pass());
+    pm.add_cgscc_pass(
+        (CgsccAnalysisCounter {
+            count: count.clone(),
+        })
+        .into_pass(),
+    );
     pm.run(&module).expect("Failed to run CGSCC analysis pass");
     assert!(count.load(Ordering::SeqCst) > 0);
 }
@@ -692,14 +703,14 @@ impl LlvmLoopAnalysis for LoopAnalysisCounter {
     type Result = ();
     fn run_analysis(
         &self,
-        loop_header: llvm_pm::LLVMBasicBlockRef,
+        loop_header: llvm_pm::traits::LLVMBasicBlockRef,
         _manager: &LoopAnalysisManager,
     ) -> Self::Result {
         let _ = loop_header;
         self.count.fetch_add(1, Ordering::SeqCst);
     }
 
-    fn id() -> llvm_pm::AnalysisKey {
+    fn id() -> *const u8 {
         static ID: u8 = 0;
         &ID
     }
@@ -710,9 +721,12 @@ fn test_loop_analysis_pass() {
     let (_module, func) = create_loop_module();
     let count = Arc::new(AtomicU32::new(0));
     let mut fpm = FunctionPassManager::new(None, None).expect("Failed to create empty FPM");
-    fpm.add_loop_pass((LoopAnalysisCounter {
-        count: count.clone(),
-    }).into_pass());
+    fpm.add_loop_pass(
+        (LoopAnalysisCounter {
+            count: count.clone(),
+        })
+        .into_pass(),
+    );
     fpm.run(func).expect("Failed to run loop analysis pass");
     assert!(count.load(Ordering::SeqCst) > 0);
 }
@@ -772,7 +786,7 @@ static NONE_PASS_RAN: AtomicU32 = AtomicU32::new(0);
 
 struct PassReturnsNone;
 
-impl llvm_pm::LlvmModulePass for PassReturnsNone {
+impl LlvmModulePass for PassReturnsNone {
     fn run_pass(
         &self,
         module: &mut inkwell::module::Module<'_>,
@@ -891,9 +905,12 @@ fn test_llvm_plugin_module_pass_and_analysis_bridge() {
     let analysis_count = Arc::new(AtomicU32::new(0));
 
     let mut pm = ModulePassManager::new(None, None).expect("Failed to create empty PM");
-    pm.add_pass((PluginModuleAnalysis {
-        count: analysis_count.clone(),
-    }).into_pass());
+    pm.add_pass(
+        (PluginModuleAnalysis {
+            count: analysis_count.clone(),
+        })
+        .into_pass(),
+    );
     pm.add_pass(PluginModulePass {
         count: pass_count.clone(),
     });
@@ -912,9 +929,12 @@ fn test_llvm_plugin_function_pass_and_analysis_bridge() {
     let analysis_count = Arc::new(AtomicU32::new(0));
 
     let mut fpm = FunctionPassManager::new(None, None).expect("Failed to create empty FPM");
-    fpm.add_pass((PluginFunctionAnalysis {
-        count: analysis_count.clone(),
-    }).into_pass());
+    fpm.add_pass(
+        (PluginFunctionAnalysis {
+            count: analysis_count.clone(),
+        })
+        .into_pass(),
+    );
     fpm.add_pass(PluginFunctionPass {
         count: pass_count.clone(),
     });

@@ -6,7 +6,7 @@ resolver = "2"
 name = "llvm-pm"
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.65"
+rust-version = "1.71"
 license = "MIT"
 repository = "https://github.com/yasuo-ozu/llvm-pm"
 description = "Safe Rust wrapper for LLVM new PassManager"
@@ -17,6 +17,7 @@ categories = ["compilers", "development-tools"]
 [features]
 default = ["llvm18-0", "llvm-plugin-crate"]
 llvm-plugin-crate = ["llvm-plugin"]
+no-llvm-linking = ["llvm-pm-sys/no-llvm-linking"]
 llvm10-0 = [
   "llvm-pm-sys/llvm10-0",
   "inkwell_05",

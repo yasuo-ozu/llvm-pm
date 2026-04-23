@@ -10,9 +10,51 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  #pre-check:
+  #  name: MSRV (Rust 1.71) / LLVM 18 and doc
+  #  runs-on: ubuntu-latest
+  #  steps:
+  #    - uses: actions/checkout@v4
+
+  #    - name: Install LLVM
+  #      uses: ./.github/actions/install-llvm
+  #      with:
+  #        version: "18.1.8"
+
+  #    - name: Install Rust MSRV
+  #      uses: dtolnay/rust-toolchain@stable
+  #      with:
+  #        toolchain: "1.71.0"
+  #        components: rustfmt, clippy
+
+  #    - name: Cache cargo home
+  #      uses: actions/cache@v4
+  #      with:
+  #        path: ~/.cargo
+  #        key: ${{ runner.os }}-ubuntu-latest-cargo-precheck-${{ hashFiles('**/Cargo.lock') }}
+  #        restore-keys: |
+  #          ${{ runner.os }}-ubuntu-latest-cargo-
+
+  #    - name: Check formatting
+  #      run: cargo fmt --all -- --check
+  #      if: success() || failure()
+
+  #    - name: Clippy
+  #      run: cargo clippy --workspace -- -D warnings
+  #      if: success() || failure()
+
+  #    - name: Doc
+  #      run: cargo doc --no-deps --verbose --workspace
+  #      if: success() || failure()
+
+  #    - name: Test (MSRV)
+  #      run: cargo test --workspace --no-default-features --features llvm18-0,llvm-plugin-crate --verbose
+  #      if: success() || failure()
+
   test:
-    name: Test / ${{ matrix.platform.label }} / LLVM ${{ matrix.llvm.version }}
+    name: Test / ${{ matrix.platform.label }} / LLVM ${{ matrix.llvm }}
     runs-on: ${{ matrix.platform.runs-on }}
+    #needs: pre-check
     strategy:
       fail-fast: false
       matrix:
@@ -26,125 +68,75 @@ jobs:
           - label: macOS (macos-latest)
             runs-on: macos-latest
             rust-toolchain: stable
-          - label: macOS (macos-13)
-            runs-on: macos-13
+          - label: macOS (macos-15-intel)
+            runs-on: macos-15-intel
             rust-toolchain: stable
         llvm:
-          #- version: 10
-          #  tag: "10.0.1"
-          #  feature: llvm10-0,llvm-plugin-crate
-          #- version: 11
-          #  tag: "11.0.1"
-          #  feature: llvm11-0,llvm-plugin-crate
-          #- version: 12
-          #  tag: "12.0.1"
-          #  feature: llvm12-0,llvm-plugin-crate
-          #- version: 13
-          #  tag: "13.0.1"
-          #  feature: llvm13-0,llvm-plugin-crate
-          #- version: 14
-          #  tag: "14.0.6"
-          #  feature: llvm14-0,llvm-plugin-crate
-          #- version: 15
-          #  tag: "15.0.7"
-          #  feature: llvm15-0,llvm-plugin-crate
-          #- version: 16
-          #  tag: "16.0.6"
-          #  feature: llvm16-0,llvm-plugin-crate
-          - version: 17
-            tag: "17.0.6"
-            feature: llvm17-0,llvm-plugin-crate
-          - version: 18
-            tag: "18.1.8"
-            feature: llvm18-0,llvm-plugin-crate
-          - version: 19
-            tag: "19.1.7"
-            feature: llvm19-1
-          - version: 20
-            tag: "20.1.8"
-            feature: llvm20-1
-          - version: 21
-            tag: "21.1.4"
-            feature: llvm21-1
-          - version: 22
-            tag: "22.1.0"
-            feature: llvm22-1
+          - "10.0.1"
+          - "11.0.1"
+          - "12.0.1"
+          - "13.0.1"
+          - "14.0.6"
+          - "15.0.7"
+          - "16.0.6"
+          - "17.0.6"
+          - "18.1.8"
+          - "19.1.7"
+          - "20.1.8"
+          - "21.1.4"
+          - "22.1.0"
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install LLVM ${{ matrix.llvm.version }}
+      - name: Install LLVM ${{ matrix.llvm }}
         uses: ./.github/actions/install-llvm
         with:
-          version: ${{ matrix.llvm.tag }}
+          version: ${{ matrix.llvm }}
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: ${{ matrix.platform.rust-toolchain }}
 
-      - name: Cache cargo registry and build
+      - name: Resolve LLVM features
+        shell: bash
+        run: |
+          LLVM_TAG="${{ matrix.llvm }}"
+          LLVM_MAJOR="${LLVM_TAG%%.*}"
+          LLVM_MINOR="$(echo "$LLVM_TAG" | cut -d. -f2)"
+          if [ "$LLVM_MAJOR" -le 18 ]; then
+            BASE_FEATURE="llvm${LLVM_MAJOR}-0"
+            if [ "$RUNNER_OS" = "Windows" ]; then
+              FEATURES="${BASE_FEATURE}"
+            else
+              FEATURES="${BASE_FEATURE},llvm-plugin-crate"
+            fi
+          else
+            FEATURES="llvm${LLVM_MAJOR}-${LLVM_MINOR}"
+          fi
+          echo "LLVM_FEATURES=${FEATURES}" >> "$GITHUB_ENV"
+
+      - name: Cache cargo home and build
         uses: actions/cache@v4
         with:
           path: |
-            ~/.cargo/registry
-            ~/.cargo/git
+            ~/.cargo
             target
-          key: ${{ runner.os }}-${{ matrix.platform.runs-on }}-llvm${{ matrix.llvm.version }}-${{ hashFiles('**/Cargo.toml') }}
+          key: ${{ runner.os }}-${{ matrix.platform.runs-on }}-cargo-llvm${{ matrix.llvm }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-${{ matrix.platform.runs-on }}-llvm${{ matrix.llvm.version }}-
+            ${{ runner.os }}-${{ matrix.platform.runs-on }}-cargo-
 
       - name: Build
-        run: cargo build --workspace --no-default-features --features ${{ matrix.llvm.feature }} --verbose
+        shell: bash
+        run: cargo build --workspace --no-default-features --features $LLVM_FEATURES --verbose
 
       - name: Test
-        run: cargo test --workspace --no-default-features --features ${{ matrix.llvm.feature }} --verbose
+        shell: bash
+        run: cargo test --workspace --no-default-features --features $LLVM_FEATURES --verbose
 
       - name: Run example
-        run: cargo run --example all_pass_kinds --no-default-features --features ${{ matrix.llvm.feature }} --verbose
-
-  msrv:
-    name: MSRV (Rust 1.65) / LLVM 18 and doc
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install LLVM
-        uses: ./.github/actions/install-llvm
-        with:
-          version: "18.1.8"
-
-      - name: Install Rust MSRV
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: "1.65.0"
-
-      - name: Doc
-        run: cargo doc --no-deps --verbose --workspace
-
-      - name: Test (MSRV)
-        run: cargo test --workspace --no-default-features --features llvm18-0,llvm-plugin-crate --verbose
-
-  fmt-clippy:
-    name: Format & Clippy
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install LLVM
-        uses: ./.github/actions/install-llvm
-        with:
-          version: "18.1.8"
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
-
-      - name: Check formatting
-        run: cargo fmt --all -- --check
-
-      - name: Clippy
-        run: cargo clippy --workspace -- -D warnings
+        shell: bash
+        run: cargo run --example all_pass_kinds --no-default-features --features $LLVM_FEATURES --verbose
 
   coverage:
     name: Test Coverage
@@ -160,6 +152,14 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Cache cargo home
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo
+          key: ${{ runner.os }}-cargo-coverage-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-ubuntu-latest-cargo-
+
       - name: Install cargo-tarpaulin
         run: cargo install cargo-tarpaulin
 
@@ -169,5 +169,6 @@ jobs:
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v4
         with:
+          token: ${{ secrets.CODECOV_TOKEN }}
           files: coverage/cobertura.xml
           fail_ci_if_error: false

@@ -9,25 +9,29 @@
 
 Safe Rust wrapper for LLVM's new PassManager (LLVM 10+).
 
-Built on top of [inkwell](https://github.com/TheDan64/inkwell) and [llvm-sys](https://crates.io/crates/llvm-sys), providing:
+Built on top of [inkwell](https://github.com/TheDan64/inkwell) and [llvm-sys](https://crates.io/crates/llvm-sys),
+and has compatibility with [llvm-plugin](https://crates.io/crates/llvm-plugin)
+
 
 ## Supported LLVM versions
 
-| Feature flag | LLVM version |
-|---|---|
-| `llvm10-0` | 10.x |
-| `llvm11-0` | 11.x |
-| `llvm12-0` | 12.x |
-| `llvm13-0` | 13.x |
-| `llvm14-0` | 14.x |
-| `llvm15-0` | 15.x |
-| `llvm16-0` | 16.x |
-| `llvm17-0` | 17.x |
-| `llvm18-0` (default) | 18.x |
-| `llvm19-1` | 19.x |
-| `llvm20-1` | 20.x |
-| `llvm21-1` | 21.x |
-| `llvm22-1` | 22.x |
+| Feature flag | LLVM version | `llvm-plugin` support [^1] |
+|---|---|---|
+| `llvm10-0` | 10.x | Yes |
+| `llvm11-0` | 11.x | Yes |
+| `llvm12-0` | 12.x | Yes |
+| `llvm13-0` | 13.x | Yes |
+| `llvm14-0` | 14.x | Yes |
+| `llvm15-0` | 15.x | Yes |
+| `llvm16-0` | 16.x | Yes |
+| `llvm17-0` | 17.x | Yes |
+| `llvm18-0` (default) | 18.x | Yes |
+| `llvm19-1` | 19.x | No |
+| `llvm20-1` | 20.x | No |
+| `llvm21-1` | 21.x | No |
+| `llvm22-1` | 22.x | No |
+
+[^1]: should specify `llvm-plugin-crate` feature flag
 
 ## Usage
 
@@ -47,7 +51,7 @@ llvm-pm = { version = "0.1", default-features = false, features = ["llvm19-1"] }
 
 ### Running standard optimizations
 
-```rust
+```ignore
 use inkwell::context::Context;
 use llvm_pm::{ModulePassManager, OptLevel};
 
@@ -65,7 +69,7 @@ unsafe {
 
 ### Textual pipeline
 
-```rust
+```ignore
 use llvm_pm::ModulePassManager;
 
 unsafe {
@@ -79,7 +83,7 @@ unsafe {
 
 ### Custom module pass
 
-```rust
+```ignore
 use llvm_pm::{LlvmModulePass, ModuleAnalysisManager, ModulePassManager, PreservedAnalyses};
 
 struct MyPass {
@@ -107,7 +111,7 @@ pm.run(&module)?;
 
 ### Custom function pass
 
-```rust
+```ignore
 use llvm_pm::{FunctionAnalysisManager, FunctionPassManager, LlvmFunctionPass, PreservedAnalyses};
 
 struct MyFnPass;

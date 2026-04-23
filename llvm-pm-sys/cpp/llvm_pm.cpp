@@ -96,15 +96,21 @@ static char *copyString(const std::string &msg) {
     return buf;
 }
 
-static OptimizationLevel mapOptLevel(LlvmPmOptLevel level) {
+#if LLVM_VERSION_MAJOR <= 13
+using LlvmPmOptimizationLevel = PassBuilder::OptimizationLevel;
+#else
+using LlvmPmOptimizationLevel = OptimizationLevel;
+#endif
+
+static LlvmPmOptimizationLevel mapOptLevel(LlvmPmOptLevel level) {
     switch (level) {
-    case LlvmPmOptLevel_O0: return OptimizationLevel::O0;
-    case LlvmPmOptLevel_O1: return OptimizationLevel::O1;
-    case LlvmPmOptLevel_O2: return OptimizationLevel::O2;
-    case LlvmPmOptLevel_O3: return OptimizationLevel::O3;
-    case LlvmPmOptLevel_Os: return OptimizationLevel::Os;
-    case LlvmPmOptLevel_Oz: return OptimizationLevel::Oz;
-    default: return OptimizationLevel::O2;
+    case LlvmPmOptLevel_O0: return LlvmPmOptimizationLevel::O0;
+    case LlvmPmOptLevel_O1: return LlvmPmOptimizationLevel::O1;
+    case LlvmPmOptLevel_O2: return LlvmPmOptimizationLevel::O2;
+    case LlvmPmOptLevel_O3: return LlvmPmOptimizationLevel::O3;
+    case LlvmPmOptLevel_Os: return LlvmPmOptimizationLevel::Os;
+    case LlvmPmOptLevel_Oz: return LlvmPmOptimizationLevel::Oz;
+    default: return LlvmPmOptimizationLevel::O2;
     }
 }
 
@@ -137,8 +143,16 @@ static LlvmPmOpaquePassManager *createInfrastructure(
     pm->CGAM = std::make_unique<CGSCCAnalysisManager>();
     pm->MAM = std::make_unique<ModuleAnalysisManager>();
 
+#if LLVM_VERSION_MAJOR >= 16
     pm->PB = std::make_unique<PassBuilder>(
         TM, PipelineTuningOptions(), std::nullopt, pm->PIC.get());
+#elif LLVM_VERSION_MAJOR >= 13
+    pm->PB = std::make_unique<PassBuilder>(
+        TM, PipelineTuningOptions(), llvm::None, pm->PIC.get());
+#else
+    pm->PB = std::make_unique<PassBuilder>(
+        pm->DebugLogging, TM, PipelineTuningOptions(), llvm::None);
+#endif
 
     PassBuilder *PBPtr = pm->PB.get();
 
@@ -149,6 +163,7 @@ static LlvmPmOpaquePassManager *createInfrastructure(
                     consumeError(std::move(Err));
             });
     }
+#if LLVM_VERSION_MAJOR >= 15
     for (const auto &p : opts.OptimizerEarlyEPs) {
         pm->PB->registerOptimizerEarlyEPCallback(
             [PBPtr, p](ModulePassManager &MPM, auto&&...) {
@@ -156,6 +171,7 @@ static LlvmPmOpaquePassManager *createInfrastructure(
                     consumeError(std::move(Err));
             });
     }
+#endif
     for (const auto &p : opts.OptimizerLastEPs) {
         pm->PB->registerOptimizerLastEPCallback(
             [PBPtr, p](ModulePassManager &MPM, auto&&...) {
@@ -211,8 +227,17 @@ static void reinitSI(LlvmPmOpaquePassManager *pm, LLVMContext &Ctx) {
 
     // Create fresh PIC+SI with the current context
     pm->PIC = std::make_unique<PassInstrumentationCallbacks>();
+#if LLVM_VERSION_MAJOR >= 16
     pm->SI = std::make_unique<StandardInstrumentations>(
         Ctx, pm->DebugLogging, pm->VerifyEach);
+#elif LLVM_VERSION_MAJOR >= 11
+    (void)Ctx;
+    pm->SI = std::make_unique<StandardInstrumentations>(
+        pm->DebugLogging, pm->VerifyEach);
+#else
+    (void)Ctx;
+    pm->SI = std::make_unique<StandardInstrumentations>();
+#endif
     pm->SI->registerCallbacks(*pm->PIC);
 
     // Re-register PassInstrumentationAnalysis in all analysis managers
@@ -278,10 +303,10 @@ extern "C" LlvmPmPassManagerRef llvm_pm_create_with_opt_level(
     char **err_msg)
 {
     auto *pm = createInfrastructure(target_machine, derefOpts(options));
-    OptimizationLevel opt = mapOptLevel(level);
+    LlvmPmOptimizationLevel opt = mapOptLevel(level);
 
     pm->MPM = std::make_unique<ModulePassManager>();
-    if (opt == OptimizationLevel::O0) {
+    if (opt == LlvmPmOptimizationLevel::O0) {
         *pm->MPM = pm->PB->buildO0DefaultPipeline(opt);
     } else {
         *pm->MPM = pm->PB->buildPerModuleDefaultPipeline(opt);
@@ -317,7 +342,7 @@ extern "C" LlvmPmPassManagerRef llvm_pm_create_lto(
     char **err_msg)
 {
     auto *pm = createInfrastructure(target_machine, derefOpts(options));
-    OptimizationLevel opt = mapOptLevel(level);
+    LlvmPmOptimizationLevel opt = mapOptLevel(level);
 
     pm->MPM = std::make_unique<ModulePassManager>();
     *pm->MPM = pm->PB->buildLTODefaultPipeline(opt, /*ExportSummary=*/nullptr);
@@ -333,7 +358,7 @@ extern "C" LlvmPmPassManagerRef llvm_pm_create_lto_pre_link(
     char **err_msg)
 {
     auto *pm = createInfrastructure(target_machine, derefOpts(options));
-    OptimizationLevel opt = mapOptLevel(level);
+    LlvmPmOptimizationLevel opt = mapOptLevel(level);
 
     pm->MPM = std::make_unique<ModulePassManager>();
     *pm->MPM = pm->PB->buildLTOPreLinkDefaultPipeline(opt);
@@ -349,7 +374,7 @@ extern "C" LlvmPmPassManagerRef llvm_pm_create_thin_lto_pre_link(
     char **err_msg)
 {
     auto *pm = createInfrastructure(target_machine, derefOpts(options));
-    OptimizationLevel opt = mapOptLevel(level);
+    LlvmPmOptimizationLevel opt = mapOptLevel(level);
 
     pm->MPM = std::make_unique<ModulePassManager>();
     *pm->MPM = pm->PB->buildThinLTOPreLinkDefaultPipeline(opt);

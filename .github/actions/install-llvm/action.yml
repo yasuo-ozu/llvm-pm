@@ -1,5 +1,5 @@
 name: install-llvm
-description: "Install pre-built LLVM binaries (Linux apt, macOS brew, Windows official installer)"
+description: "Install LLVM binaries (Linux apt, macOS brew, Windows source build with cache)"
 
 inputs:
   version:
@@ -15,52 +15,339 @@ runs:
         VERSION="${{ inputs.version }}"
         MAJOR="${VERSION%%.*}"
         MINOR="$(echo "$VERSION" | cut -d. -f2)"
+        if [ "$MAJOR" -le 18 ]; then
+          LLVM_SYS_KEY="${MAJOR}0"
+        else
+          LLVM_SYS_KEY="${MAJOR}${MINOR}"
+        fi
         echo "LLVM_MAJOR=${MAJOR}" >> "$GITHUB_ENV"
         echo "LLVM_MINOR=${MINOR}" >> "$GITHUB_ENV"
-        echo "LLVM_MAJMIN=${MAJOR}${MINOR}" >> "$GITHUB_ENV"
+        echo "LLVM_MAJMIN=${LLVM_SYS_KEY}" >> "$GITHUB_ENV"
+
+    - name: Restore LLVM cache (Linux old LLVM)
+      if: runner.os == 'Linux' && (env.LLVM_MAJOR == '10' || env.LLVM_MAJOR == '11')
+      uses: actions/cache@v4
+      with:
+        path: ~/.cache/llvm/${{ inputs.version }}
+        key: ${{ runner.os }}-llvm-src-${{ inputs.version }}-v1
 
     - name: Install LLVM (Linux)
       if: runner.os == 'Linux'
       shell: bash
       run: |
-        wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc > /dev/null
-        . /etc/os-release
-        echo "deb http://apt.llvm.org/${VERSION_CODENAME}/ llvm-toolchain-${VERSION_CODENAME}-${LLVM_MAJOR} main" | sudo tee /etc/apt/sources.list.d/llvm-${LLVM_MAJOR}.list
-        sudo apt-get update -qq
-        sudo apt-get install -qq -y \
-          "llvm-${LLVM_MAJOR}-dev" \
-          "libclang-${LLVM_MAJOR}-dev" \
-          "clang-${LLVM_MAJOR}" \
-          libffi-dev \
-          libxml2-dev
-        echo "LLVM_PREFIX=/usr/lib/llvm-${LLVM_MAJOR}" >> "$GITHUB_ENV"
-        echo "LLVM_CONFIG=llvm-config-${LLVM_MAJOR}" >> "$GITHUB_ENV"
-        echo "LIBCLANG_PATH=/usr/lib/llvm-${LLVM_MAJOR}/lib" >> "$GITHUB_ENV"
+        if [ "${LLVM_MAJOR}" -le 11 ]; then
+          LLVM_PREFIX="$HOME/.cache/llvm/${{ inputs.version }}"
+          if [ ! -x "$LLVM_PREFIX/bin/llvm-config" ]; then
+            src_root="$RUNNER_TEMP/llvm-project-${{ inputs.version }}"
+            build_root="$RUNNER_TEMP/llvm-build-${{ inputs.version }}"
+            rm -rf "$src_root" "$build_root" "$LLVM_PREFIX"
+            git clone --depth 1 --branch "llvmorg-${{ inputs.version }}" https://github.com/llvm/llvm-project "$src_root"
+            cmake_policy_args=()
+            if [ "${LLVM_MAJOR}" -le 11 ]; then
+              cmake_policy_args=(-DCMAKE_POLICY_VERSION_MINIMUM=3.5)
+            fi
+            cmake -S "$src_root/llvm" -B "$build_root" -G Ninja \
+              "${cmake_policy_args[@]}" \
+              -DCMAKE_BUILD_TYPE=Release \
+              -DCMAKE_INSTALL_PREFIX="$LLVM_PREFIX" \
+              -DLLVM_ENABLE_PROJECTS="clang;lld" \
+              -DLLVM_TARGETS_TO_BUILD="X86" \
+              -DLLVM_ENABLE_TERMINFO=OFF
+            cmake --build "$build_root" --target install --parallel
+          fi
+          echo "LLVM_PREFIX=${LLVM_PREFIX}" >> "$GITHUB_ENV"
+          echo "LLVM_CONFIG=${LLVM_PREFIX}/bin/llvm-config" >> "$GITHUB_ENV"
+          echo "LIBCLANG_PATH=${LLVM_PREFIX}/lib" >> "$GITHUB_ENV"
+        elif [ "${LLVM_MAJOR}" -le 12 ]; then
+          api_url="https://api.github.com/repos/llvm/llvm-project/releases/tags/llvmorg-${{ inputs.version }}"
+          github_headers=(-H "User-Agent: install-llvm-action")
+          ACTIONS_GITHUB_TOKEN="${{ github.token }}"
+          if [ -n "${ACTIONS_GITHUB_TOKEN}" ]; then
+            github_headers+=(-H "Authorization: Bearer ${ACTIONS_GITHUB_TOKEN}")
+          fi
+          release_json="$(curl -fsSL --retry 5 --retry-delay 2 --retry-connrefused "${github_headers[@]}" "$api_url")"
+          archive_url="$(echo "$release_json" | jq -r \
+            --arg ver "${{ inputs.version }}" '
+              .assets
+              | map(select(.name | test("^clang\\+llvm-.*linux-gnu.*\\.tar\\..*$")))
+              | map(select(.name | contains($ver)))
+              | map(select(.name | test("x86_64|amd64")))
+              | .[0].browser_download_url // empty
+            ')"
+          if [ -z "$archive_url" ]; then
+            echo "No official Linux clang+llvm archive found for llvmorg-${{ inputs.version }}." >&2
+            exit 1
+          fi
+          LLVM_PREFIX="$HOME/.cache/llvm/${{ inputs.version }}"
+          archive_path="$RUNNER_TEMP/llvm-linux-${{ inputs.version }}.archive"
+          rm -rf "$LLVM_PREFIX"
+          mkdir -p "$LLVM_PREFIX"
+          curl -fsSL --retry 5 --retry-delay 2 --retry-connrefused "${github_headers[@]}" "$archive_url" -o "$archive_path"
+          tar -xf "$archive_path" -C "$LLVM_PREFIX" --strip-components=1
+          # Older prebuilt LLVM binaries depend on libtinfo.so.5, which is not
+          # present on newer Ubuntu runners (only libtinfo.so.6).
+          if [ ! -e /usr/lib/x86_64-linux-gnu/libtinfo.so.5 ] && [ -e /usr/lib/x86_64-linux-gnu/libtinfo.so.6 ]; then
+            sudo ln -s /usr/lib/x86_64-linux-gnu/libtinfo.so.6 /usr/lib/x86_64-linux-gnu/libtinfo.so.5
+          fi
+          if [ ! -x "$LLVM_PREFIX/bin/llvm-config" ]; then
+            echo "llvm-config not found under extracted LLVM prefix: $LLVM_PREFIX" >&2
+            ls -la "$LLVM_PREFIX/bin" >&2 || true
+            exit 1
+          fi
+          echo "LLVM_PREFIX=${LLVM_PREFIX}" >> "$GITHUB_ENV"
+          echo "LLVM_CONFIG=${LLVM_PREFIX}/bin/llvm-config" >> "$GITHUB_ENV"
+          echo "LIBCLANG_PATH=${LLVM_PREFIX}/lib" >> "$GITHUB_ENV"
+        else
+          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc > /dev/null
+          . /etc/os-release
+          LLVM_APT_CODENAME=''
+          for c in "${VERSION_CODENAME}" jammy focal bionic; do
+            [ -z "$c" ] && continue
+            LLVM_RELEASE_URL="http://apt.llvm.org/${c}/dists/llvm-toolchain-${c}-${LLVM_MAJOR}/Release"
+            if curl -fsSIL "$LLVM_RELEASE_URL" >/dev/null 2>&1; then
+              LLVM_APT_CODENAME="$c"
+              break
+            fi
+          done
+          if [ -z "$LLVM_APT_CODENAME" ]; then
+            echo "No apt.llvm.org Release file found for LLVM ${LLVM_MAJOR} on tried codenames: ${VERSION_CODENAME}, jammy, focal, bionic" >&2
+            exit 1
+          fi
+          echo "deb http://apt.llvm.org/${LLVM_APT_CODENAME}/ llvm-toolchain-${LLVM_APT_CODENAME}-${LLVM_MAJOR} main" | sudo tee /etc/apt/sources.list.d/llvm-${LLVM_MAJOR}.list
+          sudo apt-get update -qq
+          sudo apt-get install -qq -y \
+            "llvm-${LLVM_MAJOR}-dev" \
+            "libclang-${LLVM_MAJOR}-dev" \
+            "clang-${LLVM_MAJOR}" \
+            libffi-dev \
+            libxml2-dev
+          # Some older apt.llvm.org suites do not provide libpolly-<major>-dev.
+          if apt-cache show "libpolly-${LLVM_MAJOR}-dev" >/dev/null 2>&1; then
+            sudo apt-get install -qq -y "libpolly-${LLVM_MAJOR}-dev"
+          fi
+          # Some toolchains link with -lLLVM and require an unversioned soname.
+          # Create compatibility symlink when the distro ships only libLLVM-<major>.so.
+          if [ ! -e "/usr/lib/llvm-${LLVM_MAJOR}/lib/libLLVM.so" ] && [ -e "/usr/lib/llvm-${LLVM_MAJOR}/lib/libLLVM-${LLVM_MAJOR}.so" ]; then
+            sudo ln -s "/usr/lib/llvm-${LLVM_MAJOR}/lib/libLLVM-${LLVM_MAJOR}.so" "/usr/lib/llvm-${LLVM_MAJOR}/lib/libLLVM.so"
+          fi
+          echo "LLVM_PREFIX=/usr/lib/llvm-${LLVM_MAJOR}" >> "$GITHUB_ENV"
+          echo "LLVM_CONFIG=llvm-config-${LLVM_MAJOR}" >> "$GITHUB_ENV"
+          echo "LIBCLANG_PATH=/usr/lib/llvm-${LLVM_MAJOR}/lib" >> "$GITHUB_ENV"
+        fi
 
     - name: Install LLVM (macOS)
       if: runner.os == 'macOS'
       shell: bash
       run: |
-        brew install "llvm@${LLVM_MAJOR}"
-        LLVM_PREFIX="$(brew --prefix "llvm@${LLVM_MAJOR}")"
+        LLVM_FORMULA="llvm@${LLVM_MAJOR}"
+        LLVM_PREFIX=""
+        if brew list --versions "$LLVM_FORMULA" >/dev/null 2>&1; then
+          LLVM_PREFIX="$(brew --prefix "$LLVM_FORMULA")"
+        elif brew install "$LLVM_FORMULA" && brew list --versions "$LLVM_FORMULA" >/dev/null 2>&1; then
+          LLVM_PREFIX="$(brew --prefix "$LLVM_FORMULA")"
+        fi
+        if [ -z "$LLVM_PREFIX" ] || [ ! -x "$LLVM_PREFIX/bin/llvm-config" ]; then
+          echo "Homebrew formula llvm@${LLVM_MAJOR} unavailable. Falling back to official LLVM archive." >&2
+          api_url="https://api.github.com/repos/llvm/llvm-project/releases/tags/llvmorg-${{ inputs.version }}"
+          arch="$(uname -m)"
+          if [ "$arch" = "arm64" ] || [ "$arch" = "aarch64" ]; then
+            arch_filter='arm64|aarch64'
+            fallback_filter='x86_64'
+          else
+            arch_filter='x86_64'
+            fallback_filter=''
+          fi
+
+          github_headers=(-H "User-Agent: install-llvm-action")
+          ACTIONS_GITHUB_TOKEN="${{ github.token }}"
+          if [ -n "${ACTIONS_GITHUB_TOKEN}" ]; then
+            github_headers+=(-H "Authorization: Bearer ${ACTIONS_GITHUB_TOKEN}")
+          fi
+          release_json="$(curl -fsSL --retry 5 --retry-delay 2 --retry-connrefused "${github_headers[@]}" "$api_url")"
+          archive_url="$(echo "$release_json" | jq -r \
+            --arg ver "${{ inputs.version }}" \
+            --arg af "$arch_filter" '
+              .assets
+              | map(select(.name | test("^clang\\+llvm-.*apple-darwin.*\\.tar\\..*$")))
+              | map(select(.name | contains($ver)))
+              | map(select(.name | test($af)))
+              | .[0].browser_download_url // empty
+            ')"
+          if [ -z "$archive_url" ] && [ -n "$fallback_filter" ]; then
+            archive_url="$(echo "$release_json" | jq -r \
+              --arg ver "${{ inputs.version }}" \
+              --arg ff "$fallback_filter" '
+                .assets
+                | map(select(.name | test("^clang\\+llvm-.*apple-darwin.*\\.tar\\..*$")))
+                | map(select(.name | contains($ver)))
+                | map(select(.name | test($ff)))
+                | .[0].browser_download_url // empty
+              ')"
+          fi
+          if [ -z "$archive_url" ]; then
+            echo "No official macOS clang+llvm archive found for llvmorg-${{ inputs.version }}. Falling back to source build." >&2
+            src_root="$RUNNER_TEMP/llvm-project-${{ inputs.version }}"
+            build_root="$RUNNER_TEMP/llvm-build-${{ inputs.version }}"
+            LLVM_PREFIX="$HOME/.cache/llvm/${{ inputs.version }}"
+            rm -rf "$src_root" "$build_root" "$LLVM_PREFIX"
+            git clone --depth 1 --branch "llvmorg-${{ inputs.version }}" https://github.com/llvm/llvm-project "$src_root"
+            cmake_policy_args=()
+            if [ "${LLVM_MAJOR}" -le 11 ]; then
+              cmake_policy_args=(-DCMAKE_POLICY_VERSION_MINIMUM=3.5)
+            fi
+            cmake -S "$src_root/llvm" -B "$build_root" -G Ninja \
+              "${cmake_policy_args[@]}" \
+              -DCMAKE_BUILD_TYPE=Release \
+              -DCMAKE_INSTALL_PREFIX="$LLVM_PREFIX" \
+              -DLLVM_ENABLE_PROJECTS="clang;lld" \
+              -DLLVM_TARGETS_TO_BUILD="X86;AArch64"
+            cmake --build "$build_root" --target install --parallel
+            archive_url=""
+          fi
+
+          LLVM_PREFIX="$HOME/.cache/llvm/${{ inputs.version }}"
+          archive_path="$RUNNER_TEMP/llvm-macos-${{ inputs.version }}.archive"
+          if [ -n "$archive_url" ]; then
+            rm -rf "$LLVM_PREFIX"
+            mkdir -p "$LLVM_PREFIX"
+            curl -fsSL --retry 5 --retry-delay 2 --retry-connrefused "${github_headers[@]}" "$archive_url" -o "$archive_path"
+            tar -xf "$archive_path" -C "$LLVM_PREFIX" --strip-components=1
+          fi
+        fi
+        if [ ! -x "$LLVM_PREFIX/bin/llvm-config" ]; then
+          echo "llvm-config not found under LLVM_PREFIX: $LLVM_PREFIX" >&2
+          ls -la "$LLVM_PREFIX/bin" >&2 || true
+          exit 1
+        fi
         echo "LLVM_PREFIX=${LLVM_PREFIX}" >> "$GITHUB_ENV"
         echo "LLVM_CONFIG=${LLVM_PREFIX}/bin/llvm-config" >> "$GITHUB_ENV"
         echo "LIBCLANG_PATH=${LLVM_PREFIX}/lib" >> "$GITHUB_ENV"
 
+    - name: Restore LLVM cache (Windows)
+      if: runner.os == 'Windows'
+      id: cache-llvm-windows
+      uses: actions/cache@v4
+      with:
+        path: C:\LLVM\${{ inputs.version }}
+        key: ${{ runner.os }}-llvm-src-libxml2off-${{ inputs.version }}-v1
+
+    - name: Build LLVM from source (Windows)
+      if: runner.os == 'Windows' && steps.cache-llvm-windows.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        src_root="$RUNNER_TEMP/llvm-project-${{ inputs.version }}"
+        build_root="$RUNNER_TEMP/llvm-build-${{ inputs.version }}"
+        install_root="C:\\LLVM\\${{ inputs.version }}"
+        install_root_u="$(cygpath -u "$install_root")"
+        rm -rf "$install_root_u"
+        rm -rf "$src_root" "$build_root"
+        git clone --depth 1 --branch "llvmorg-${{ inputs.version }}" https://github.com/llvm/llvm-project "$src_root"
+        toolset_args=()
+        # LLVM 10/11 are often incompatible with the newest MSVC STL/toolset.
+        # Prefer VS2019-compatible toolset when available on GitHub runners.
+        if [ "${LLVM_MAJOR}" -le 11 ]; then
+          toolset_args=(-T v142)
+        fi
+        cmake -S "$src_root/llvm" -B "$build_root" -G "Visual Studio 17 2022" -A x64 \
+          "${toolset_args[@]}" \
+          -DCMAKE_INSTALL_PREFIX="$install_root_u" \
+          -DLLVM_ENABLE_PROJECTS="clang;lld" \
+          -DLLVM_TARGETS_TO_BUILD="X86" \
+          -DLLVM_ENABLE_LIBXML2=OFF
+        cmake --build "$build_root" --config Release --target install --parallel
+
     - name: Install LLVM (Windows)
       if: runner.os == 'Windows'
-      shell: pwsh
+      shell: bash
       run: |
-        $url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-${{ inputs.version }}/LLVM-${{ inputs.version }}-win64.exe"
-        Invoke-WebRequest -Uri $url -OutFile llvm-installer.exe
-        Start-Process -Wait -FilePath .\llvm-installer.exe -ArgumentList "/S", "/D=C:\LLVM"
-        echo "LLVM_PREFIX=C:\LLVM" >> $env:GITHUB_ENV
-        echo "LLVM_CONFIG=C:\LLVM\bin\llvm-config.exe" >> $env:GITHUB_ENV
-        echo "LIBCLANG_PATH=C:\LLVM\lib" >> $env:GITHUB_ENV
-        echo "C:\LLVM\bin" >> $env:GITHUB_PATH
+        install_root="C:\\LLVM\\${{ inputs.version }}"
+        install_root_u="$(cygpath -u "$install_root")"
+        if [ ! -f "$install_root_u/bin/clang.exe" ]; then
+          echo "Installed LLVM does not provide Windows clang.exe at bin/clang.exe under $install_root" >&2
+          ls -la "$install_root_u/bin" >&2 || true
+          exit 1
+        fi
+        if [ ! -f "$install_root_u/include/llvm-c/Types.h" ] || [ ! -f "$install_root_u/include/llvm-c/TargetMachine.h" ]; then
+          echo "Incomplete LLVM C API headers under install root: $install_root" >&2
+          ls -la "$install_root_u/include" >&2 || true
+          ls -la "$install_root_u/include/llvm-c" >&2 || true
+          exit 1
+        fi
+
+        echo "LLVM_PREFIX=${install_root}" >> "$GITHUB_ENV"
+        echo "LLVM_DIR=${install_root}" >> "$GITHUB_ENV"
+        if [ -f "$install_root_u/bin/llvm-config.exe" ]; then
+          echo "LLVM_CONFIG=${install_root}\\bin\\llvm-config.exe" >> "$GITHUB_ENV"
+        fi
+        echo "LIBCLANG_PATH=${install_root}\\bin" >> "$GITHUB_ENV"
+        echo "${install_root}\\bin" >> "$GITHUB_PATH"
 
     - name: Set LLVM environment
       shell: bash
       run: |
         echo "LLVM_SYS_${LLVM_MAJMIN}_PREFIX=${LLVM_PREFIX}" >> "$GITHUB_ENV"
-        "${LLVM_CONFIG}" --version
+        if [ "${{ runner.os }}" = "Windows" ]; then
+          echo "LLVM_INCLUDE_DIR=${LLVM_PREFIX}\\include" >> "$GITHUB_ENV"
+          echo "LLVM_LIBRARY_DIR=${LLVM_PREFIX}\\lib" >> "$GITHUB_ENV"
+          #echo "INCLUDE=${INCLUDE};${LLVM_PREFIX}\\include" >> "$GITHUB_ENV"
+          #echo "LIB=${LIB};${LLVM_PREFIX}\\lib" >> "$GITHUB_ENV"
+        elif [ "${{ runner.os }}" = "macOS" ]; then
+          echo "LLVM_INCLUDE_DIR=${LLVM_PREFIX}/include" >> "$GITHUB_ENV"
+          echo "LLVM_LIBRARY_DIR=${LLVM_PREFIX}/lib" >> "$GITHUB_ENV"
+        else
+          echo "LLVM_INCLUDE_DIR=${LLVM_PREFIX}/include" >> "$GITHUB_ENV"
+          echo "LLVM_LIBRARY_DIR=${LLVM_PREFIX}/lib" >> "$GITHUB_ENV"
+          echo "CPATH=${LLVM_PREFIX}/include:${CPATH}" >> "$GITHUB_ENV"
+          echo "LIBRARY_PATH=${LLVM_PREFIX}/lib:${LIBRARY_PATH}" >> "$GITHUB_ENV"
+        fi
+        if [ -n "$LLVM_CONFIG" ]; then
+          echo "LLVM_CONFIG_PATH=${LLVM_CONFIG}" >> "$GITHUB_ENV"
+          "${LLVM_CONFIG}" --version
+        fi
+
+    - name: Check LLVM broader C API headers
+      shell: bash
+      run: |
+        if [ "${{ runner.os }}" = "Windows" ]; then
+          include_dir="$(cygpath -u "${LLVM_INCLUDE_DIR}")"
+        else
+          include_dir="${LLVM_INCLUDE_DIR}"
+        fi
+        for h in "llvm-c/Types.h" "llvm-c/TargetMachine.h"; do
+          if [ ! -f "${include_dir}/${h}" ]; then
+            echo "Missing required LLVM C API header: ${include_dir}/${h}" >&2
+            ls -la "${include_dir}" >&2 || true
+            ls -la "${include_dir}/llvm-c" >&2 || true
+            exit 1
+          fi
+        done
+        echo "Found required broader LLVM C API headers under ${include_dir}/llvm-c"
+
+    - name: Dump LLVM environment
+      shell: bash
+      run: |
+        echo "LLVM_MAJOR=${LLVM_MAJOR}"
+        echo "LLVM_MINOR=${LLVM_MINOR}"
+        echo "LLVM_MAJMIN=${LLVM_MAJMIN}"
+        echo "LLVM_PREFIX=${LLVM_PREFIX}"
+        echo "LLVM_DIR=${LLVM_DIR}"
+        echo "LLVM_CONFIG=${LLVM_CONFIG}"
+        echo "LLVM_CONFIG_PATH=${LLVM_CONFIG_PATH}"
+        echo "LIBCLANG_PATH=${LIBCLANG_PATH}"
+        echo "LLVM_INCLUDE_DIR=${LLVM_INCLUDE_DIR}"
+        echo "LLVM_LIBRARY_DIR=${LLVM_LIBRARY_DIR}"
+        echo "CPATH=${CPATH}"
+        echo "LIBRARY_PATH=${LIBRARY_PATH}"
+        echo "INCLUDE=${INCLUDE}"
+        echo "LIB=${LIB}"
+        key="LLVM_SYS_${LLVM_MAJMIN}_PREFIX"
+        echo "${key}=$(printenv "$key")"
+        echo "Listing LLVM include dir: ${LLVM_INCLUDE_DIR}"
+        if [ "${{ runner.os }}" = "Windows" ]; then
+          include_dir_u="$(cygpath -u "${LLVM_INCLUDE_DIR}")"
+          ls -la "${include_dir_u}" || true
+          find "${include_dir_u}" -maxdepth 3 -type f | sort || true
+        else
+          ls -la "${LLVM_INCLUDE_DIR}" || true
+          find "${LLVM_INCLUDE_DIR}" -maxdepth 3 -type f | sort || true
+        fi

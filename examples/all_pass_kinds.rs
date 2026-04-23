@@ -1,19 +1,23 @@
 use llvm_pm::inkwell;
-use llvm_pm::inkwell::OptimizationLevel;
 use llvm_pm::inkwell::values::AsValueRef;
 use llvm_pm::inkwell::IntPredicate;
+use llvm_pm::inkwell::OptimizationLevel;
+use llvm_pm::traits::{
+    LlvmCgsccAnalysis, LlvmCgsccPass, LlvmFunctionAnalysis, LlvmFunctionPass, LlvmLoopAnalysis,
+    LlvmLoopPass, LlvmModuleAnalysis, LlvmModulePass, PreservedAnalyses,
+};
+use llvm_pm::{
+    CgsccAnalysisManager, FunctionAnalysisManager, FunctionPassManager, LoopAnalysisManager,
+    ModuleAnalysisManager, ModulePassManager, OptLevel,
+};
+
+type AnalysisKey = *const u8;
 use llvm_pm_sys::llvm_sys::core::{
     LLVMConstInt, LLVMGetBasicBlockParent, LLVMGetGlobalParent, LLVMGetNamedGlobal,
     LLVMGlobalGetValueType, LLVMSetInitializer,
 };
-use llvm_pm::{
-    AnalysisKey, CgsccAnalysisManager, FunctionAnalysisManager, FunctionPassManager,
-    LlvmCgsccAnalysis, LlvmCgsccPass, LlvmFunctionAnalysis, LlvmFunctionPass, LlvmLoopAnalysis,
-    LlvmLoopPass, LlvmModuleAnalysis, LlvmModulePass, LoopAnalysisManager, ModuleAnalysisManager,
-    ModulePassManager, OptLevel, PreservedAnalyses,
-};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::Arc;
 
 const DELTA_GLOBAL: &str = "pass_delta";
 const DELTA_MODULE: u64 = 3;
@@ -42,7 +46,10 @@ fn get_pass_delta(module: &inkwell::module::Module<'_>) -> u64 {
         .expect("initializer should be integer constant")
 }
 
-unsafe fn set_pass_delta_from_function_ref(function_ref: llvm_pm::LLVMValueRef, value: u64) {
+unsafe fn set_pass_delta_from_function_ref(
+    function_ref: llvm_pm::traits::LLVMValueRef,
+    value: u64,
+) {
     // SAFETY: function_ref is received from LLVM callbacks and points to a live function.
     // We only read its parent module/global and replace the constant initializer with
     // a same-typed integer constant.
@@ -56,6 +63,41 @@ unsafe fn set_pass_delta_from_function_ref(function_ref: llvm_pm::LLVMValueRef, 
     let ty = LLVMGlobalGetValueType(global);
     let v = LLVMConstInt(ty, value, 0);
     LLVMSetInitializer(global, v);
+}
+
+#[cfg(any(
+    feature = "llvm10-0",
+    feature = "llvm11-0",
+    feature = "llvm12-0",
+    feature = "llvm13-0",
+    feature = "llvm14-0"
+))]
+fn build_load_i32<'ctx>(
+    b: &inkwell::builder::Builder<'ctx>,
+    _i32_ty: inkwell::types::IntType<'ctx>,
+    ptr: inkwell::values::PointerValue<'ctx>,
+    name: &str,
+) -> inkwell::values::IntValue<'ctx> {
+    b.build_load(ptr, name).unwrap().into_int_value()
+}
+
+#[cfg(any(
+    feature = "llvm15-0",
+    feature = "llvm16-0",
+    feature = "llvm17-0",
+    feature = "llvm18-0",
+    feature = "llvm19-1",
+    feature = "llvm20-1",
+    feature = "llvm21-1",
+    feature = "llvm22-1"
+))]
+fn build_load_i32<'ctx>(
+    b: &inkwell::builder::Builder<'ctx>,
+    i32_ty: inkwell::types::IntType<'ctx>,
+    ptr: inkwell::values::PointerValue<'ctx>,
+    name: &str,
+) -> inkwell::values::IntValue<'ctx> {
+    b.build_load(i32_ty, ptr, name).unwrap().into_int_value()
 }
 
 fn build_demo_module() -> inkwell::module::Module<'static> {
@@ -84,7 +126,12 @@ fn build_demo_module() -> inkwell::module::Module<'static> {
         .build_int_sub(x_plus_4, i32_ty.const_int(4, false), "x_fold")
         .unwrap();
     let cmp = b
-        .build_int_compare(IntPredicate::SGT, x_fold, i32_ty.const_int(10, false), "cmp")
+        .build_int_compare(
+            IntPredicate::SGT,
+            x_fold,
+            i32_ty.const_int(10, false),
+            "cmp",
+        )
         .unwrap();
     b.build_conditional_branch(cmp, then_bb, else_bb).unwrap();
 
@@ -101,7 +148,9 @@ fn build_demo_module() -> inkwell::module::Module<'static> {
     b.build_unconditional_branch(merge_bb).unwrap();
 
     b.position_at_end(else_bb);
-    let e1 = b.build_xor(x_fold, i32_ty.const_int(0, false), "e1").unwrap();
+    let e1 = b
+        .build_xor(x_fold, i32_ty.const_int(0, false), "e1")
+        .unwrap();
     let e2 = b
         .build_int_add(e1, i32_ty.const_int(1, false), "e2")
         .unwrap();
@@ -137,12 +186,9 @@ fn build_demo_module() -> inkwell::module::Module<'static> {
     b.build_unconditional_branch(cond_bb).unwrap();
 
     b.position_at_end(cond_bb);
-    let i = b.build_load(i32_ty, i_ptr, "i").unwrap().into_int_value();
+    let i = build_load_i32(&b, i32_ty, i_ptr, "i");
     let n = helper.get_first_param().unwrap().into_int_value();
-    let tmp = b
-        .build_load(i32_ty, tmp_ptr, "tmp")
-        .unwrap()
-        .into_int_value();
+    let tmp = build_load_i32(&b, i32_ty, tmp_ptr, "tmp");
     let _noise_cmp = b
         .build_int_compare(IntPredicate::SGE, tmp, i32_ty.const_zero(), "noise_cmp")
         .unwrap();
@@ -153,15 +199,13 @@ fn build_demo_module() -> inkwell::module::Module<'static> {
         .unwrap();
 
     b.position_at_end(body_bb);
-    let acc = b
-        .build_load(i32_ty, acc_ptr, "acc")
-        .unwrap()
-        .into_int_value();
+    let acc = build_load_i32(&b, i32_ty, acc_ptr, "acc");
     let i_square = b.build_int_mul(i, i, "i_square").unwrap();
     let folded_i = b
         .build_int_unsigned_div(
             b.build_int_add(i_square, i, "plus_i").unwrap(),
-            b.build_int_add(i, i32_ty.const_int(1, false), "i_plus_1").unwrap(),
+            b.build_int_add(i, i32_ty.const_int(1, false), "i_plus_1")
+                .unwrap(),
             "folded_i",
         )
         .unwrap();
@@ -174,9 +218,13 @@ fn build_demo_module() -> inkwell::module::Module<'static> {
     b.build_unconditional_branch(cond_bb).unwrap();
 
     b.position_at_end(exit_bb);
-    let acc_final = b.build_load(i32_ty, acc_ptr, "acc_final").unwrap();
+    let acc_final = build_load_i32(&b, i32_ty, acc_ptr, "acc_final");
     let out = b
-        .build_int_add(acc_final.into_int_value(), i32_ty.const_int(0, false), "out")
+        .build_int_add(
+            acc_final,
+            i32_ty.const_int(0, false),
+            "out",
+        )
         .unwrap();
     b.build_return(Some(&out)).unwrap();
 
@@ -191,25 +239,66 @@ fn build_demo_module() -> inkwell::module::Module<'static> {
     b.position_at_end(entry);
     let a = driver.get_nth_param(0).unwrap().into_int_value();
     let b_arg = driver.get_nth_param(1).unwrap().into_int_value();
-    let c1 = b
-        .build_call(callee, &[a.into()], "c1")
-        .unwrap()
-        .try_as_basic_value()
-        .left()
-        .unwrap()
-        .into_int_value();
-    let c2 = b
-        .build_call(helper, &[b_arg.into()], "c2")
-        .unwrap()
-        .try_as_basic_value()
-        .left()
-        .unwrap()
-        .into_int_value();
+    let c1 = {
+        let value = b
+            .build_call(callee, &[a.into()], "c1")
+            .unwrap()
+            .try_as_basic_value();
+        #[cfg(any(
+            feature = "llvm10-0",
+            feature = "llvm11-0",
+            feature = "llvm12-0",
+            feature = "llvm13-0",
+            feature = "llvm14-0",
+            feature = "llvm15-0",
+            feature = "llvm16-0",
+            feature = "llvm17-0",
+            feature = "llvm18-0"
+        ))]
+        {
+            value.left().unwrap().into_int_value()
+        }
+        #[cfg(any(
+            feature = "llvm19-1",
+            feature = "llvm20-1",
+            feature = "llvm21-1",
+            feature = "llvm22-1"
+        ))]
+        {
+            value.unwrap_basic().into_int_value()
+        }
+    };
+    let c2 = {
+        let value = b
+            .build_call(helper, &[b_arg.into()], "c2")
+            .unwrap()
+            .try_as_basic_value();
+        #[cfg(any(
+            feature = "llvm10-0",
+            feature = "llvm11-0",
+            feature = "llvm12-0",
+            feature = "llvm13-0",
+            feature = "llvm14-0",
+            feature = "llvm15-0",
+            feature = "llvm16-0",
+            feature = "llvm17-0",
+            feature = "llvm18-0"
+        ))]
+        {
+            value.left().unwrap().into_int_value()
+        }
+        #[cfg(any(
+            feature = "llvm19-1",
+            feature = "llvm20-1",
+            feature = "llvm21-1",
+            feature = "llvm22-1"
+        ))]
+        {
+            value.unwrap_basic().into_int_value()
+        }
+    };
     let raw_sum = b.build_int_add(c1, c2, "raw_sum").unwrap();
-    let delta_loaded = b
-        .build_load(i32_ty, delta.as_pointer_value(), "delta")
-        .unwrap()
-        .into_int_value();
+    let delta_loaded = build_load_i32(&b, i32_ty, delta.as_pointer_value(), "delta");
     let adjusted = b.build_int_add(raw_sum, delta_loaded, "adjusted").unwrap();
     let is_big = b
         .build_int_compare(
@@ -219,7 +308,8 @@ fn build_demo_module() -> inkwell::module::Module<'static> {
             "is_big",
         )
         .unwrap();
-    b.build_conditional_branch(is_big, big_bb, small_bb).unwrap();
+    b.build_conditional_branch(is_big, big_bb, small_bb)
+        .unwrap();
 
     b.position_at_end(big_bb);
     let big_t0 = b
@@ -266,7 +356,7 @@ impl LlvmLoopAnalysis for LoopHeaderNonNullAnalysis {
     type Result = bool;
     fn run_analysis(
         &self,
-        loop_header: llvm_pm::LLVMBasicBlockRef,
+        loop_header: llvm_pm::traits::LLVMBasicBlockRef,
         _manager: &LoopAnalysisManager,
     ) -> Self::Result {
         !loop_header.is_null()
@@ -387,7 +477,7 @@ struct LoopUsesAnalysisPass {
 impl LlvmLoopPass for LoopUsesAnalysisPass {
     fn run_pass(
         &self,
-        loop_header: llvm_pm::LLVMBasicBlockRef,
+        loop_header: llvm_pm::traits::LLVMBasicBlockRef,
         manager: &LoopAnalysisManager,
     ) -> PreservedAnalyses {
         self.ran.fetch_add(1, Ordering::SeqCst);
@@ -460,7 +550,7 @@ impl LlvmLoopAnalysis for LoopAnalysisOnlyPass {
     type Result = ();
     fn run_analysis(
         &self,
-        _loop_header: llvm_pm::LLVMBasicBlockRef,
+        _loop_header: llvm_pm::traits::LLVMBasicBlockRef,
         _manager: &LoopAnalysisManager,
     ) -> Self::Result {
     }
