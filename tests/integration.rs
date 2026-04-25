@@ -813,6 +813,171 @@ fn test_preserved_analyses_none() {
 // llvm-plugin trait bridge tests
 // =========================================================================
 
+// =========================================================================
+// Multithreading tests
+// =========================================================================
+
+/// Test running independent ModulePassManagers on separate threads,
+/// each with its own Context.
+#[test]
+fn test_multithreaded_independent_module_pms() {
+    let num_threads = 4;
+    let total_count = Arc::new(AtomicU32::new(0));
+
+    let handles: Vec<_> = (0..num_threads)
+        .map(|_| {
+            let count = total_count.clone();
+            std::thread::spawn(move || {
+                let context = Box::leak(Box::new(Context::create()));
+                let module = context.create_module("mt_test");
+                let void_ty = context.void_type();
+                let fn_ty = void_ty.fn_type(&[], false);
+                let func = module.add_function("f", fn_ty, None);
+                let bb = context.append_basic_block(func, "entry");
+                let builder = context.create_builder();
+                builder.position_at_end(bb);
+                builder.build_return(None).unwrap();
+
+                let counter = FunctionCounter {
+                    count: count.clone(),
+                };
+                let mut pm = ModulePassManager::new(None, None).expect("Failed to create empty PM");
+                pm.add_pass(counter);
+                pm.run(&module).expect("Failed to run passes");
+            })
+        })
+        .collect();
+
+    for h in handles {
+        h.join().expect("Thread panicked");
+    }
+
+    assert_eq!(
+        total_count.load(Ordering::SeqCst),
+        num_threads,
+        "Each thread should have counted 1 function"
+    );
+}
+
+/// Test running independent FunctionPassManagers on separate threads.
+#[test]
+fn test_multithreaded_independent_function_pms() {
+    let num_threads = 4;
+    let total_count = Arc::new(AtomicU32::new(0));
+
+    let handles: Vec<_> = (0..num_threads)
+        .map(|_| {
+            let count = total_count.clone();
+            std::thread::spawn(move || {
+                let context = Box::leak(Box::new(Context::create()));
+                let module = context.create_module("mt_fn_test");
+                let i32_ty = context.i32_type();
+                let fn_ty = i32_ty.fn_type(&[i32_ty.into()], false);
+                let func = module.add_function("identity", fn_ty, None);
+                let bb = context.append_basic_block(func, "entry");
+                let builder = context.create_builder();
+                builder.position_at_end(bb);
+                let param = func.get_nth_param(0).unwrap().into_int_value();
+                builder.build_return(Some(&param)).unwrap();
+
+                let counter = FnPassCounter {
+                    count: count.clone(),
+                };
+                let mut fpm =
+                    FunctionPassManager::new(None, None).expect("Failed to create empty FPM");
+                fpm.add_pass(counter);
+                fpm.run(func).expect("Failed to run function passes");
+            })
+        })
+        .collect();
+
+    for h in handles {
+        h.join().expect("Thread panicked");
+    }
+
+    assert_eq!(
+        total_count.load(Ordering::SeqCst),
+        num_threads,
+        "Each thread should have run the function pass once"
+    );
+}
+
+/// Test Send: create a ModulePassManager on one thread, send it to another
+/// where both the module and the run happen.
+#[test]
+fn test_send_module_pm_across_threads() {
+    let count = Arc::new(AtomicU32::new(0));
+
+    // Build PM on main thread
+    let mut pm = ModulePassManager::new(None, None).expect("Failed to create empty PM");
+    pm.add_pass(FunctionCounter {
+        count: count.clone(),
+    });
+
+    // Move PM to another thread; module is created there
+    let handle = std::thread::spawn(move || {
+        let module = create_test_module();
+        pm.run(&module).expect("Failed to run passes on moved PM");
+    });
+    handle.join().expect("Thread panicked");
+
+    assert_eq!(count.load(Ordering::SeqCst), 1);
+}
+
+/// Test Send: create a FunctionPassManager on one thread, send it to another.
+#[test]
+fn test_send_function_pm_across_threads() {
+    let count = Arc::new(AtomicU32::new(0));
+
+    // Build FPM on main thread
+    let mut fpm = FunctionPassManager::new(None, None).expect("Failed to create empty FPM");
+    fpm.add_pass(FnPassCounter {
+        count: count.clone(),
+    });
+
+    // Move FPM to another thread; function is created there
+    let handle = std::thread::spawn(move || {
+        let (_module, func) = create_add_module();
+        fpm.run(func)
+            .expect("Failed to run function passes on moved FPM");
+    });
+    handle.join().expect("Thread panicked");
+
+    assert_eq!(count.load(Ordering::SeqCst), 1);
+}
+
+/// Test multiple threads each creating and running standard optimization pipelines.
+#[test]
+fn test_multithreaded_opt_pipelines() {
+    let num_threads = 4;
+    let handles: Vec<_> = (0..num_threads)
+        .map(|i| {
+            std::thread::spawn(move || {
+                let context = Box::leak(Box::new(Context::create()));
+                let module = context.create_module(&format!("opt_mt_{}", i));
+                let i32_ty = context.i32_type();
+                let fn_ty = i32_ty.fn_type(&[i32_ty.into(), i32_ty.into()], false);
+                let func = module.add_function("add", fn_ty, None);
+                let bb = context.append_basic_block(func, "entry");
+                let builder = context.create_builder();
+                builder.position_at_end(bb);
+                let a = func.get_nth_param(0).unwrap().into_int_value();
+                let b = func.get_nth_param(1).unwrap().into_int_value();
+                let sum = builder.build_int_add(a, b, "sum").unwrap();
+                builder.build_return(Some(&sum)).unwrap();
+
+                let mut pm = ModulePassManager::with_opt_level(None, OptLevel::O2, None)
+                    .expect("Failed to create PM");
+                pm.run(&module).expect("Failed to run O2 pipeline");
+            })
+        })
+        .collect();
+
+    for h in handles {
+        h.join().expect("Thread panicked");
+    }
+}
+
 #[cfg(feature = "llvm-plugin-crate")]
 struct PluginModulePass {
     count: Arc<AtomicU32>,

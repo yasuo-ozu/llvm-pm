@@ -1,3 +1,56 @@
+// # Safety overview
+//
+// This crate wraps LLVM's C++ PassManager through an `extern "C"` FFI layer.
+// All unsafe usage falls into these categories:
+//
+// ## FFI calls (Options, PassManager constructors, run, dispose)
+// Each C++ function receives either null or a valid handle created by a prior
+// C++ call. Handles are stored in private fields and never exposed, ensuring
+// validity until `Drop`. Error strings returned by C++ stubs are malloc'd
+// and freed exactly once via `consume_c_error`.
+//
+// ## Pass trampolines (`module_pass_trampoline`, etc.)
+// These `extern "C"` callbacks bridge C++ PassManager invocations to Rust
+// `LlvmModulePass`/`LlvmFunctionPass` trait methods. Safety relies on:
+// - `user_data` pointing to a `Box<T>` kept alive in `_passes: Vec<Box<dyn Any>>`
+// - Monomorphization ensuring the correct type `T` at each call site
+// - `Module::new()` + `mem::forget()` avoiding double-free of LLVM-owned modules
+//
+// **Panic safety**: if a pass's `run_pass` panics, the unwind would cross
+// an `extern "C"` boundary. Rust >= 1.71 aborts in this case; older versions
+// exhibit undefined behavior. Users must ensure their passes do not panic.
+//
+// ## `Send` implementations
+// `ModulePassManager` and `FunctionPassManager` implement `Send` because:
+// - The C++ handle owns all internal state (no shared mutable aliases)
+// - `_passes` contains only owned `Box`es
+// - All mutation requires `&mut self`, preventing concurrent access
+//
+// ## Global analysis registries (`cgscc_analysis_passes`, etc.)
+// Use `Once` + `static mut` to lazily initialize `&'static Mutex<HashMap<…>>`.
+// The `Box` is intentionally leaked to obtain `'static` lifetime. All access
+// is synchronized through `Mutex`.
+//
+// ## Analysis result caches
+// `get_result()` stores analysis results as leaked `Box<A::Result>` (cast to
+// `usize`) in a global cache keyed by `(manager_ptr, analysis_id, ir_key)`.
+// The leaked allocation is never freed, so the returned `&A::Result` reference
+// remains valid for the program's lifetime. Type safety is maintained because
+// the cache key includes the analysis type's `id()` and the lookup is generic
+// over `A`.
+//
+// **Known limitation**: after a PassManager is dropped, a new PM *could* receive
+// the same heap address, causing `get_result` to return stale (but type-safe and
+// dereferenceable) cached results from the previous PM. This is a correctness
+// concern, not a memory-safety issue, and only affects CGSCC/loop analyses
+// registered via the Rust-side analysis manager.
+//
+// ## Drop ordering
+// `ModulePassManager::drop` calls `llvm_pm_dispose` (freeing C++ infrastructure)
+// before Rust drops `_passes`. This is correct because the C++ `RustModulePass`
+// destructor does NOT free `user_data`—it only stores a raw pointer. After
+// `llvm_pm_dispose`, no C++ code will access the pass pointers.
+
 #![doc = include_str!("../README.md")]
 
 #[cfg(any(
@@ -611,8 +664,10 @@ impl Drop for LoopAnalysisEntry {
     }
 }
 
-// SAFETY: Entries are only accessed under a mutex and contain raw pointers to heap
-// allocations owned by this process.
+// SAFETY: Entries contain raw pointers (`pass: *mut c_void`) to heap-allocated
+// `Box<T>` values and function pointers (`pass_deleter`, `pass_entrypoint`).
+// All access to entries is behind a `Mutex`, so no data races are possible.
+// The pointed-to data is owned exclusively by this entry (freed in Drop).
 unsafe impl Send for CgsccAnalysisEntry {}
 unsafe impl Send for LoopAnalysisEntry {}
 
@@ -685,8 +740,14 @@ fn preserved_to_c(pa: traits::PreservedAnalyses) -> std::ffi::c_int {
 /// Generic trampoline for module passes. Monomorphized per `T`.
 ///
 /// # Safety
-/// `user_data` must be a valid pointer to a `T` that was stored in
-/// [`ModulePassManager::_passes`]. `module` must be a valid `LLVMModuleRef`.
+/// - `user_data` must be a valid pointer to a `T` that was stored in
+///   [`ModulePassManager::_passes`].
+/// - `module` must be a valid `LLVMModuleRef` owned by the caller (not consumed).
+/// - `manager` must be a valid `ModuleAnalysisManager*` from the C++ layer.
+///
+/// # Panics
+/// If `T::run_pass` panics, the unwind crosses an `extern "C"` boundary.
+/// Rust >= 1.71 aborts; older versions have undefined behavior.
 unsafe extern "C" fn module_pass_trampoline<T: LlvmModulePass>(
     module: LLVMModuleRef,
     manager: *mut c_void,
@@ -694,6 +755,9 @@ unsafe extern "C" fn module_pass_trampoline<T: LlvmModulePass>(
 ) -> std::ffi::c_int {
     // SAFETY: user_data was cast from &T stored in a Box inside _passes.
     let pass = &*(user_data as *const T);
+    // SAFETY: Module::new wraps the LLVMModuleRef without taking ownership.
+    // We must call forget() to avoid dropping (and freeing) the LLVM module,
+    // which is owned by the caller (C++ PassManager).
     let mut module = inkwell::module::Module::new(module);
     let manager = ModuleAnalysisManager::from_raw(manager, None);
     let result = pass.run_pass(&mut module, &manager);
@@ -704,14 +768,23 @@ unsafe extern "C" fn module_pass_trampoline<T: LlvmModulePass>(
 /// Generic trampoline for function passes. Monomorphized per `T`.
 ///
 /// # Safety
-/// `user_data` must be a valid pointer to a `T` that was stored in
-/// [`FunctionPassManager::_passes`]. `function` must be a valid `LLVMValueRef`.
+/// - `user_data` must be a valid pointer to a `T` that was stored in
+///   [`FunctionPassManager::_passes`].
+/// - `function` must be a valid `LLVMValueRef` representing a function.
+/// - `manager` must be a valid `FunctionAnalysisManager*` from the C++ layer.
+///
+/// # Panics
+/// If `T::run_pass` panics, the unwind crosses an `extern "C"` boundary.
+/// Rust >= 1.71 aborts; older versions have undefined behavior.
 unsafe extern "C" fn function_pass_trampoline<T: LlvmFunctionPass>(
     function: LLVMValueRef,
     manager: *mut c_void,
     user_data: *mut c_void,
 ) -> std::ffi::c_int {
+    // SAFETY: user_data was cast from &T stored in a Box inside _passes.
     let pass = &*(user_data as *const T);
+    // SAFETY: FunctionValue::new wraps the LLVMValueRef without ownership.
+    // FunctionValue has no Drop impl, so no forget() needed.
     let mut function = inkwell::values::FunctionValue::new(function).expect("invalid function");
     let manager = FunctionAnalysisManager::from_raw(manager, None);
     let result = pass.run_pass(&mut function, &manager);
@@ -721,15 +794,23 @@ unsafe extern "C" fn function_pass_trampoline<T: LlvmFunctionPass>(
 /// Generic trampoline for CGSCC passes. Monomorphized per `T`.
 ///
 /// # Safety
-/// `user_data` must be a valid pointer to a `T` that was stored in
-/// [`ModulePassManager::_passes`]. `function` must be a valid `LLVMValueRef`.
+/// - `user_data` must be a valid pointer to a `T` that was stored in
+///   [`ModulePassManager::_passes`].
+/// - `function` must be a valid `LLVMValueRef` representing a function in the SCC.
+/// - `manager` must be a valid `CGSCCAnalysisManager*` from the C++ layer.
+///
+/// # Panics
+/// If `T::run_pass` panics, the unwind crosses an `extern "C"` boundary.
+/// Rust >= 1.71 aborts; older versions have undefined behavior.
 unsafe extern "C" fn cgscc_pass_trampoline<T: LlvmCgsccPass>(
     function: LLVMValueRef,
     manager: *mut c_void,
     user_data: *mut c_void,
 ) -> std::ffi::c_int {
+    // SAFETY: user_data was cast from &T stored in a Box inside _passes.
     let pass = &*(user_data as *const T);
     let mut function = inkwell::values::FunctionValue::new(function).expect("invalid function");
+    // SAFETY: manager is valid for callback duration (owned by C++ PM infrastructure).
     let manager = CgsccAnalysisManager::from_raw(manager);
     let result = pass.run_pass(&mut function, &manager);
     preserved_to_c(result)
@@ -738,14 +819,22 @@ unsafe extern "C" fn cgscc_pass_trampoline<T: LlvmCgsccPass>(
 /// Generic trampoline for loop passes. Monomorphized per `T`.
 ///
 /// # Safety
-/// `user_data` must be a valid pointer to a `T` that was stored in
-/// [`FunctionPassManager::_passes`]. `header` must be a valid `LLVMBasicBlockRef`.
+/// - `user_data` must be a valid pointer to a `T` that was stored in
+///   [`FunctionPassManager::_passes`].
+/// - `header` must be a valid `LLVMBasicBlockRef` for the loop header.
+/// - `manager` must be a valid `LoopAnalysisManager*` from the C++ layer.
+///
+/// # Panics
+/// If `T::run_pass` panics, the unwind crosses an `extern "C"` boundary.
+/// Rust >= 1.71 aborts; older versions have undefined behavior.
 unsafe extern "C" fn loop_pass_trampoline<T: LlvmLoopPass>(
     header: LLVMBasicBlockRef,
     manager: *mut c_void,
     user_data: *mut c_void,
 ) -> std::ffi::c_int {
+    // SAFETY: user_data was cast from &T stored in a Box inside _passes.
     let pass = &*(user_data as *const T);
+    // SAFETY: manager is valid for callback duration (owned by C++ PM infrastructure).
     let manager = LoopAnalysisManager::from_raw(manager);
     let result = pass.run_pass(header, &manager);
     preserved_to_c(result)
@@ -1009,11 +1098,13 @@ impl<'a> Drop for ModulePassManager<'a> {
     }
 }
 
-// SAFETY: The bundled pass manager owns all its internal state (analysis managers,
-// PassBuilder, etc.) and does not share mutable state with other instances.
-// Stored passes are only accessed via &mut self methods.
-// Moving between threads is safe; concurrent access is prevented by requiring
-// exclusive access for operations.
+// SAFETY: `ModulePassManager` owns all its internal state exclusively:
+// - `raw`: opaque C handle to a bundled C++ PM (PassBuilder, analysis managers,
+//   StandardInstrumentations). No shared mutable aliases exist.
+// - `_passes`: Vec of owned Boxes. Not Sync, but Send (owned data).
+// All mutating operations (`run`, `add_pass`) require `&mut self`, so the type
+// system prevents concurrent access. Moving between threads is safe because
+// the C++ handle and Rust Boxes are self-contained.
 unsafe impl<'a> Send for ModulePassManager<'a> {}
 
 // =========================================================================
@@ -1174,9 +1265,6 @@ impl<'a> Drop for FunctionPassManager<'a> {
     }
 }
 
-// SAFETY: The bundled pass manager owns all its internal state (analysis managers,
-// PassBuilder, etc.) and does not share mutable state with other instances.
-// Stored passes are only accessed via &mut self methods.
-// Moving between threads is safe; concurrent access is prevented by requiring
-// exclusive (&mut) access for operations.
+// SAFETY: Same rationale as `ModulePassManager`: exclusively-owned C++ handle
+// and Rust Boxes. All mutating operations require `&mut self`.
 unsafe impl<'a> Send for FunctionPassManager<'a> {}
