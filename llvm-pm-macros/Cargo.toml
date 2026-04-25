@@ -1,0 +1,16 @@
+[package]
+name = "llvm-pm-macros"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/yasuo-ozu/llvm-pm"
+description = "Proc macros for llvm-pm (LLVM plugin attribute)"
+rust-version = "1.71"
+
+[lib]
+proc-macro = true
+
+[dependencies]
+syn = { version = "2", features = ["full"] }
+quote = "1"
+proc-macro2 = "1"

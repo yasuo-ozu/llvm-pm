@@ -324,9 +324,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Phase 3: Report final stats (after DCE)
     {
         let mut pm = ModulePassManager::new(None, None)?;
-        pm.add_pass(DCEStatsPass {
-            label: "After DCE",
-        });
+        pm.add_pass(DCEStatsPass { label: "After DCE" });
         pm.run(&module)?;
     }
 

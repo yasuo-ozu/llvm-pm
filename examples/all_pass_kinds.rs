@@ -220,11 +220,7 @@ fn build_demo_module() -> inkwell::module::Module<'static> {
     b.position_at_end(exit_bb);
     let acc_final = build_load_i32(&b, i32_ty, acc_ptr, "acc_final");
     let out = b
-        .build_int_add(
-            acc_final,
-            i32_ty.const_int(0, false),
-            "out",
-        )
+        .build_int_add(acc_final, i32_ty.const_int(0, false), "out")
         .unwrap();
     b.build_return(Some(&out)).unwrap();
 

@@ -6,6 +6,7 @@ Safe Rust wrapper for LLVM's new PassManager (PassBuilder-based, LLVM 10+).
 
 ```
 src/lib.rs              Safe Rust wrapper (root crate, depends on inkwell)
+src/plugin.rs           Plugin API (PassBuilder, PluginModulePassManager, etc.)
 src/context.rs          BetterContext (Send+Sync context wrapper)
 tests/integration.rs    Integration tests
 
@@ -14,6 +15,9 @@ llvm-pm-sys/            Low-level FFI crate (depends on llvm-sys)
   cpp/llvm_pm.cpp       C++ stubs wrapping LLVM PassBuilder, analysis managers, etc.
   build.rs              Finds LLVM (llvm-config / LLVM_DIR), compiles C++ via cc, runs bindgen
   src/lib.rs            Re-exports llvm-sys, includes bindgen bindings
+
+llvm-pm-macros/         Proc-macro crate (#[plugin] attribute)
+  src/lib.rs            Generates llvmGetPassPluginInfo entry point
 
 ```
 
@@ -35,14 +39,14 @@ The C++ PassManager wrapper remains compatible with LLVM 10/11/12/13/14/15/16/17
 
 ```
 llvm-pm (root crate)
-  ├── llvm-plugin (0.6)
+  ├── llvm-plugin (0.6, optional)
   │     └── inkwell (0.5)
   │           └── llvm-sys 180
-  ├── inkwell (0.5)
-  │     └── llvm-sys 180
+  ├── inkwell (0.5 or 0.9)
+  │     └── llvm-sys (feature-selected)
   ├── llvm-pm-sys
   │     └── llvm-sys 100/110/120/130/140/150/160/170/180/191/201/211/221 (feature-selected)
-  └── (no proc-macro crate)
+  └── llvm-pm-macros (optional, proc-macro, no LLVM dep)
 ```
 
 - `llvm-sys` handles LLVM library linking. Our `build.rs` only compiles C++ stubs and links C++ stdlib.
@@ -89,6 +93,9 @@ Expose LLVM's C++ PassBuilder API through `extern "C"` functions. Key functions:
 - `llvm_pm_add_module_pass()` / `llvm_pm_add_function_pass()` — add custom Rust callback passes
 - `llvm_pm_create_empty_module()` / `llvm_pm_create_empty_function()` — empty PMs for custom-only pipelines
 - `llvm_pm_dispose()` / `llvm_pm_dispose_message()` — cleanup
+- `llvm_pm_plugin_api_version()` — return `LLVM_PLUGIN_API_VERSION`
+- `llvm_pm_pb_add_*()` — register callbacks on a raw PassBuilder* (pipeline parsing, analysis registration, extension points)
+- `llvm_pm_raw_mpm_add_module_pass()` / `llvm_pm_raw_fpm_add_function_pass()` — add owned passes to raw PMs (used by plugin callbacks)
 
 LLVM-C opaque types (`LLVMModuleRef`, etc.) are unwrapped via `reinterpret_cast` to avoid depending on LLVM's internal wrap/unwrap headers.
 
@@ -125,6 +132,21 @@ Re-exports: `inkwell`, `LLVMModuleRef`, `LLVMValueRef`.
 
 Pass manager constructors and `run()` are safe (take inkwell types). Use `inkwell::targets::TargetMachine` directly.
 `ModulePassManager` and `FunctionPassManager` implement `Send`.
+
+### Layer 4: Plugin API (`src/plugin.rs` + `llvm-pm-macros/`)
+
+For building LLVM plugins (`cdylib` crates loaded by `opt`/`clang`):
+- `#[llvm_pm::plugin(name = "...", version = "...")]` — attribute macro generating `llvmGetPassPluginInfo` entry point
+- `PassBuilder` — wraps raw `PassBuilder*` from LLVM, provides callback registration
+  - `add_module_pipeline_parsing_callback()`, `add_function_pipeline_parsing_callback()`
+  - `add_module_analysis_registration_callback()`, `add_function_analysis_registration_callback()`
+  - Extension point callbacks (peephole, optimizer_last, pipeline_start, etc.)
+- `PluginModulePassManager` — borrowed `ModulePassManager*`, `add_pass()` transfers ownership to C++
+- `PluginFunctionPassManager` — borrowed `FunctionPassManager*`, `add_pass()` transfers ownership to C++
+- `PipelineParsing` — `Parsed` / `NotParsed` enum for pipeline callbacks
+- `PassPluginLibraryInfo` — struct returned by `llvmGetPassPluginInfo`
+
+C++ side uses `shared_ptr<void>` for callback data and `RustOwned{Module,Function,CGSCC,Loop}Pass` for pass data ownership.
 
 ### Platform support
 
@@ -192,4 +214,4 @@ GitHub Actions (`.github/workflows/ci.yml`) using `.github/actions/install-llvm`
 - [x] Add test with multithreading, using multiple Context per thread.
 - [x] improve coverage
 - [x] implement a realistic example, that defines each pass and analysis, and use analyse pass result in each pass. refer existing LLVM pass to represent in Rust.
-- [] provide `#[plugin]` attribute macro, which plays the same role as `llvm-plugin` crate does (but support LLVM newer than 18). also provide original `PassBuilder`.
+- [x] provide `#[plugin]` attribute macro, which plays the same role as `llvm-plugin` crate does (but support LLVM newer than 18). also provide original `PassBuilder`.

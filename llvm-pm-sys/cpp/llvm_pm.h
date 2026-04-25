@@ -209,6 +209,118 @@ void llvm_pm_dispose(LlvmPmPassManagerRef pm);
 /** Free an error/info message. msg may be NULL (no-op). */
 void llvm_pm_dispose_message(char *msg);
 
+/* =========================================================================
+ * Plugin API — PassBuilder callback registration
+ * ========================================================================= */
+
+/** Return the LLVM plugin API version constant. */
+unsigned llvm_pm_plugin_api_version(void);
+
+/** Callback deleter for plugin callbacks. */
+typedef void (*LlvmPmCallbackDeleter)(const void *cb_data);
+
+/** Module pipeline parsing callback. Return non-zero if the pass name was parsed. */
+typedef int (*LlvmPmPipelineParsingCallback)(
+    const void *cb_data, const char *name, size_t name_len, void *pass_manager);
+
+/** Analysis registration callback. */
+typedef void (*LlvmPmAnalysisRegistrationCallback)(
+    const void *cb_data, void *analysis_manager);
+
+/** Extension point callback (receives optimization level). */
+typedef void (*LlvmPmExtensionPointCallback)(
+    const void *cb_data, void *pass_manager, LlvmPmOptLevel opt_level);
+
+/** Register a module pipeline parsing callback on a raw PassBuilder. */
+void llvm_pm_pb_add_module_pipeline_parsing_callback(
+    void *pass_builder, const void *cb_data,
+    LlvmPmCallbackDeleter cb_deleter,
+    LlvmPmPipelineParsingCallback callback);
+
+/** Register a function pipeline parsing callback on a raw PassBuilder. */
+void llvm_pm_pb_add_function_pipeline_parsing_callback(
+    void *pass_builder, const void *cb_data,
+    LlvmPmCallbackDeleter cb_deleter,
+    LlvmPmPipelineParsingCallback callback);
+
+/** Register a module analysis registration callback on a raw PassBuilder. */
+void llvm_pm_pb_add_module_analysis_registration_callback(
+    void *pass_builder, const void *cb_data,
+    LlvmPmCallbackDeleter cb_deleter,
+    LlvmPmAnalysisRegistrationCallback callback);
+
+/** Register a function analysis registration callback on a raw PassBuilder. */
+void llvm_pm_pb_add_function_analysis_registration_callback(
+    void *pass_builder, const void *cb_data,
+    LlvmPmCallbackDeleter cb_deleter,
+    LlvmPmAnalysisRegistrationCallback callback);
+
+/** Register a peephole extension point callback (function-level). */
+void llvm_pm_pb_add_peephole_ep_callback(
+    void *pass_builder, const void *cb_data,
+    LlvmPmCallbackDeleter cb_deleter,
+    LlvmPmExtensionPointCallback callback);
+
+/** Register a scalar-optimizer-late extension point callback (function-level). */
+void llvm_pm_pb_add_scalar_optimizer_late_ep_callback(
+    void *pass_builder, const void *cb_data,
+    LlvmPmCallbackDeleter cb_deleter,
+    LlvmPmExtensionPointCallback callback);
+
+/** Register a vectorizer-start extension point callback (function-level). */
+void llvm_pm_pb_add_vectorizer_start_ep_callback(
+    void *pass_builder, const void *cb_data,
+    LlvmPmCallbackDeleter cb_deleter,
+    LlvmPmExtensionPointCallback callback);
+
+/** Register an optimizer-last extension point callback (module-level, LLVM 11+). */
+void llvm_pm_pb_add_optimizer_last_ep_callback(
+    void *pass_builder, const void *cb_data,
+    LlvmPmCallbackDeleter cb_deleter,
+    LlvmPmExtensionPointCallback callback);
+
+/** Register a pipeline-start extension point callback (module-level, LLVM 12+). */
+void llvm_pm_pb_add_pipeline_start_ep_callback(
+    void *pass_builder, const void *cb_data,
+    LlvmPmCallbackDeleter cb_deleter,
+    LlvmPmExtensionPointCallback callback);
+
+/** Register a pipeline-early-simplification extension point callback (module-level, LLVM 12+). */
+void llvm_pm_pb_add_pipeline_early_simplification_ep_callback(
+    void *pass_builder, const void *cb_data,
+    LlvmPmCallbackDeleter cb_deleter,
+    LlvmPmExtensionPointCallback callback);
+
+/** Register an optimizer-early extension point callback (module-level, LLVM 15+). */
+void llvm_pm_pb_add_optimizer_early_ep_callback(
+    void *pass_builder, const void *cb_data,
+    LlvmPmCallbackDeleter cb_deleter,
+    LlvmPmExtensionPointCallback callback);
+
+/* =========================================================================
+ * Plugin API — raw pass manager operations
+ * ========================================================================= */
+
+/** Add a custom module pass to a raw ModulePassManager (C++ side owns pass data). */
+void llvm_pm_raw_mpm_add_module_pass(
+    void *raw_mpm, void *pass_data, void (*pass_deleter)(void *),
+    LlvmPmModulePassCallback entrypoint);
+
+/** Add a custom function pass to a raw FunctionPassManager (C++ side owns pass data). */
+void llvm_pm_raw_fpm_add_function_pass(
+    void *raw_fpm, void *pass_data, void (*pass_deleter)(void *),
+    LlvmPmFunctionPassCallback entrypoint);
+
+/** Add a custom CGSCC pass to a raw ModulePassManager (C++ side owns pass data). */
+void llvm_pm_raw_mpm_add_cgscc_pass(
+    void *raw_mpm, void *pass_data, void (*pass_deleter)(void *),
+    LlvmPmCGSCCPassCallback entrypoint);
+
+/** Add a custom loop pass to a raw FunctionPassManager (C++ side owns pass data). */
+void llvm_pm_raw_fpm_add_loop_pass(
+    void *raw_fpm, void *pass_data, void (*pass_deleter)(void *),
+    LlvmPmLoopPassCallback entrypoint);
+
 #ifdef __cplusplus
 }
 #endif

@@ -6,6 +6,7 @@
 #include <llvm/IR/Module.h>
 #include <llvm/IR/PassInstrumentation.h>
 #include <llvm/Passes/PassBuilder.h>
+#include <llvm/Passes/PassPlugin.h>
 #include <llvm/Passes/StandardInstrumentations.h>
 #include <llvm/Analysis/CGSCCPassManager.h>
 #include <llvm/Analysis/LoopAnalysisManager.h>
@@ -572,4 +573,308 @@ extern "C" void llvm_pm_dispose(LlvmPmPassManagerRef pm) {
 
 extern "C" void llvm_pm_dispose_message(char *msg) {
     std::free(msg);
+}
+
+// ===== Plugin API =====
+
+#ifndef LLVM_PLUGIN_API_VERSION
+#define LLVM_PLUGIN_API_VERSION 1
+#endif
+
+extern "C" unsigned llvm_pm_plugin_api_version(void) {
+    return LLVM_PLUGIN_API_VERSION;
+}
+
+/// Reverse map LLVM's OptimizationLevel to our C enum.
+static LlvmPmOptLevel reverseMapOptLevel(LlvmPmOptimizationLevel opt) {
+#if LLVM_VERSION_MAJOR >= 11
+    unsigned speed = opt.getSpeedupLevel();
+    unsigned size = opt.getSizeLevel();
+    if (speed == 0 && size == 0) return LlvmPmOptLevel_O0;
+    if (speed == 1 && size == 0) return LlvmPmOptLevel_O1;
+    if (speed == 2 && size == 0) return LlvmPmOptLevel_O2;
+    if (speed == 3 && size == 0) return LlvmPmOptLevel_O3;
+    if (speed == 2 && size == 1) return LlvmPmOptLevel_Os;
+    if (speed == 2 && size == 2) return LlvmPmOptLevel_Oz;
+    return LlvmPmOptLevel_O2;
+#else
+    if (opt == LlvmPmOptimizationLevel::O0) return LlvmPmOptLevel_O0;
+    if (opt == LlvmPmOptimizationLevel::O1) return LlvmPmOptLevel_O1;
+    if (opt == LlvmPmOptimizationLevel::O2) return LlvmPmOptLevel_O2;
+    if (opt == LlvmPmOptimizationLevel::O3) return LlvmPmOptLevel_O3;
+    if (opt == LlvmPmOptimizationLevel::Os) return LlvmPmOptLevel_Os;
+    return LlvmPmOptLevel_Oz;
+#endif
+}
+
+// ===== PassBuilder callback registration =====
+
+extern "C" void llvm_pm_pb_add_module_pipeline_parsing_callback(
+    void *pass_builder, const void *cb_data,
+    LlvmPmCallbackDeleter cb_deleter,
+    LlvmPmPipelineParsingCallback callback)
+{
+    auto *PB = reinterpret_cast<PassBuilder *>(pass_builder);
+    auto Data = std::shared_ptr<const void>(cb_data, cb_deleter);
+    PB->registerPipelineParsingCallback(
+        [Data, callback](StringRef Name, ModulePassManager &MPM,
+                         ArrayRef<PassBuilder::PipelineElement>) -> bool {
+            return callback(Data.get(), Name.data(), Name.size(), &MPM) != 0;
+        });
+}
+
+extern "C" void llvm_pm_pb_add_function_pipeline_parsing_callback(
+    void *pass_builder, const void *cb_data,
+    LlvmPmCallbackDeleter cb_deleter,
+    LlvmPmPipelineParsingCallback callback)
+{
+    auto *PB = reinterpret_cast<PassBuilder *>(pass_builder);
+    auto Data = std::shared_ptr<const void>(cb_data, cb_deleter);
+    PB->registerPipelineParsingCallback(
+        [Data, callback](StringRef Name, FunctionPassManager &FPM,
+                         ArrayRef<PassBuilder::PipelineElement>) -> bool {
+            return callback(Data.get(), Name.data(), Name.size(), &FPM) != 0;
+        });
+}
+
+extern "C" void llvm_pm_pb_add_module_analysis_registration_callback(
+    void *pass_builder, const void *cb_data,
+    LlvmPmCallbackDeleter cb_deleter,
+    LlvmPmAnalysisRegistrationCallback callback)
+{
+    auto *PB = reinterpret_cast<PassBuilder *>(pass_builder);
+    auto Data = std::shared_ptr<const void>(cb_data, cb_deleter);
+    PB->registerAnalysisRegistrationCallback(
+        [Data, callback](ModuleAnalysisManager &MAM) {
+            callback(Data.get(), &MAM);
+        });
+}
+
+extern "C" void llvm_pm_pb_add_function_analysis_registration_callback(
+    void *pass_builder, const void *cb_data,
+    LlvmPmCallbackDeleter cb_deleter,
+    LlvmPmAnalysisRegistrationCallback callback)
+{
+    auto *PB = reinterpret_cast<PassBuilder *>(pass_builder);
+    auto Data = std::shared_ptr<const void>(cb_data, cb_deleter);
+    PB->registerAnalysisRegistrationCallback(
+        [Data, callback](FunctionAnalysisManager &FAM) {
+            callback(Data.get(), &FAM);
+        });
+}
+
+extern "C" void llvm_pm_pb_add_peephole_ep_callback(
+    void *pass_builder, const void *cb_data,
+    LlvmPmCallbackDeleter cb_deleter,
+    LlvmPmExtensionPointCallback callback)
+{
+    auto *PB = reinterpret_cast<PassBuilder *>(pass_builder);
+    auto Data = std::shared_ptr<const void>(cb_data, cb_deleter);
+    PB->registerPeepholeEPCallback(
+        [Data, callback](FunctionPassManager &FPM, LlvmPmOptimizationLevel Opt) {
+            callback(Data.get(), &FPM, reverseMapOptLevel(Opt));
+        });
+}
+
+extern "C" void llvm_pm_pb_add_scalar_optimizer_late_ep_callback(
+    void *pass_builder, const void *cb_data,
+    LlvmPmCallbackDeleter cb_deleter,
+    LlvmPmExtensionPointCallback callback)
+{
+    auto *PB = reinterpret_cast<PassBuilder *>(pass_builder);
+    auto Data = std::shared_ptr<const void>(cb_data, cb_deleter);
+    PB->registerScalarOptimizerLateEPCallback(
+        [Data, callback](FunctionPassManager &FPM, LlvmPmOptimizationLevel Opt) {
+            callback(Data.get(), &FPM, reverseMapOptLevel(Opt));
+        });
+}
+
+extern "C" void llvm_pm_pb_add_vectorizer_start_ep_callback(
+    void *pass_builder, const void *cb_data,
+    LlvmPmCallbackDeleter cb_deleter,
+    LlvmPmExtensionPointCallback callback)
+{
+    auto *PB = reinterpret_cast<PassBuilder *>(pass_builder);
+    auto Data = std::shared_ptr<const void>(cb_data, cb_deleter);
+    PB->registerVectorizerStartEPCallback(
+        [Data, callback](FunctionPassManager &FPM, LlvmPmOptimizationLevel Opt) {
+            callback(Data.get(), &FPM, reverseMapOptLevel(Opt));
+        });
+}
+
+#if LLVM_VERSION_MAJOR >= 11
+extern "C" void llvm_pm_pb_add_optimizer_last_ep_callback(
+    void *pass_builder, const void *cb_data,
+    LlvmPmCallbackDeleter cb_deleter,
+    LlvmPmExtensionPointCallback callback)
+{
+    auto *PB = reinterpret_cast<PassBuilder *>(pass_builder);
+    auto Data = std::shared_ptr<const void>(cb_data, cb_deleter);
+    PB->registerOptimizerLastEPCallback(
+        [Data, callback](ModulePassManager &MPM, LlvmPmOptimizationLevel Opt) {
+            callback(Data.get(), &MPM, reverseMapOptLevel(Opt));
+        });
+}
+#endif
+
+#if LLVM_VERSION_MAJOR >= 12
+extern "C" void llvm_pm_pb_add_pipeline_start_ep_callback(
+    void *pass_builder, const void *cb_data,
+    LlvmPmCallbackDeleter cb_deleter,
+    LlvmPmExtensionPointCallback callback)
+{
+    auto *PB = reinterpret_cast<PassBuilder *>(pass_builder);
+    auto Data = std::shared_ptr<const void>(cb_data, cb_deleter);
+    PB->registerPipelineStartEPCallback(
+        [Data, callback](ModulePassManager &MPM, LlvmPmOptimizationLevel Opt) {
+            callback(Data.get(), &MPM, reverseMapOptLevel(Opt));
+        });
+}
+
+extern "C" void llvm_pm_pb_add_pipeline_early_simplification_ep_callback(
+    void *pass_builder, const void *cb_data,
+    LlvmPmCallbackDeleter cb_deleter,
+    LlvmPmExtensionPointCallback callback)
+{
+    auto *PB = reinterpret_cast<PassBuilder *>(pass_builder);
+    auto Data = std::shared_ptr<const void>(cb_data, cb_deleter);
+    PB->registerPipelineEarlySimplificationEPCallback(
+        [Data, callback](ModulePassManager &MPM, LlvmPmOptimizationLevel Opt) {
+            callback(Data.get(), &MPM, reverseMapOptLevel(Opt));
+        });
+}
+#endif
+
+#if LLVM_VERSION_MAJOR >= 15
+extern "C" void llvm_pm_pb_add_optimizer_early_ep_callback(
+    void *pass_builder, const void *cb_data,
+    LlvmPmCallbackDeleter cb_deleter,
+    LlvmPmExtensionPointCallback callback)
+{
+    auto *PB = reinterpret_cast<PassBuilder *>(pass_builder);
+    auto Data = std::shared_ptr<const void>(cb_data, cb_deleter);
+    PB->registerOptimizerEarlyEPCallback(
+        [Data, callback](ModulePassManager &MPM, LlvmPmOptimizationLevel Opt) {
+            callback(Data.get(), &MPM, reverseMapOptLevel(Opt));
+        });
+}
+#endif
+
+// ===== Owned pass wrappers (for plugin raw PM operations) =====
+// These own their Rust pass data via shared_ptr, unlike the non-owned
+// variants used by our opaque PM bundle.
+
+struct RustOwnedModulePass : public PassInfoMixin<RustOwnedModulePass> {
+    LlvmPmModulePassCallback Callback;
+    std::shared_ptr<void> Data;
+
+    RustOwnedModulePass(LlvmPmModulePassCallback cb, void *data,
+                        void (*deleter)(void *))
+        : Callback(cb), Data(data, deleter) {}
+
+    PreservedAnalyses run(Module &M, ModuleAnalysisManager &MAM) {
+        int result = Callback(
+            reinterpret_cast<LLVMModuleRef>(&M),
+            reinterpret_cast<void *>(&MAM),
+            Data.get());
+        return result == 0 ? PreservedAnalyses::all() : PreservedAnalyses::none();
+    }
+};
+
+struct RustOwnedFunctionPass : public PassInfoMixin<RustOwnedFunctionPass> {
+    LlvmPmFunctionPassCallback Callback;
+    std::shared_ptr<void> Data;
+
+    RustOwnedFunctionPass(LlvmPmFunctionPassCallback cb, void *data,
+                          void (*deleter)(void *))
+        : Callback(cb), Data(data, deleter) {}
+
+    PreservedAnalyses run(Function &F, FunctionAnalysisManager &FAM) {
+        int result = Callback(
+            reinterpret_cast<LLVMValueRef>(&F),
+            reinterpret_cast<void *>(&FAM),
+            Data.get());
+        return result == 0 ? PreservedAnalyses::all() : PreservedAnalyses::none();
+    }
+};
+
+struct RustOwnedCGSCCPass : public PassInfoMixin<RustOwnedCGSCCPass> {
+    LlvmPmCGSCCPassCallback Callback;
+    std::shared_ptr<void> Data;
+
+    RustOwnedCGSCCPass(LlvmPmCGSCCPassCallback cb, void *data,
+                       void (*deleter)(void *))
+        : Callback(cb), Data(data, deleter) {}
+
+    PreservedAnalyses run(
+        LazyCallGraph::SCC &C, CGSCCAnalysisManager &AM,
+        LazyCallGraph &, CGSCCUpdateResult &)
+    {
+        bool preservesAll = true;
+        for (LazyCallGraph::Node &N : C) {
+            Function &F = N.getFunction();
+            int result = Callback(
+                reinterpret_cast<LLVMValueRef>(&F),
+                reinterpret_cast<void *>(&AM),
+                Data.get());
+            if (result != 0) preservesAll = false;
+        }
+        return preservesAll ? PreservedAnalyses::all() : PreservedAnalyses::none();
+    }
+};
+
+struct RustOwnedLoopPass : public PassInfoMixin<RustOwnedLoopPass> {
+    LlvmPmLoopPassCallback Callback;
+    std::shared_ptr<void> Data;
+
+    RustOwnedLoopPass(LlvmPmLoopPassCallback cb, void *data,
+                      void (*deleter)(void *))
+        : Callback(cb), Data(data, deleter) {}
+
+    PreservedAnalyses run(
+        Loop &L, LoopAnalysisManager &AM,
+        LoopStandardAnalysisResults &, LPMUpdater &)
+    {
+        int result = Callback(
+            reinterpret_cast<LLVMBasicBlockRef>(L.getHeader()),
+            reinterpret_cast<void *>(&AM),
+            Data.get());
+        return result == 0 ? PreservedAnalyses::all() : PreservedAnalyses::none();
+    }
+};
+
+// ===== Raw pass manager operations =====
+
+extern "C" void llvm_pm_raw_mpm_add_module_pass(
+    void *raw_mpm, void *pass_data, void (*pass_deleter)(void *),
+    LlvmPmModulePassCallback entrypoint)
+{
+    auto *MPM = reinterpret_cast<ModulePassManager *>(raw_mpm);
+    MPM->addPass(RustOwnedModulePass(entrypoint, pass_data, pass_deleter));
+}
+
+extern "C" void llvm_pm_raw_fpm_add_function_pass(
+    void *raw_fpm, void *pass_data, void (*pass_deleter)(void *),
+    LlvmPmFunctionPassCallback entrypoint)
+{
+    auto *FPM = reinterpret_cast<FunctionPassManager *>(raw_fpm);
+    FPM->addPass(RustOwnedFunctionPass(entrypoint, pass_data, pass_deleter));
+}
+
+extern "C" void llvm_pm_raw_mpm_add_cgscc_pass(
+    void *raw_mpm, void *pass_data, void (*pass_deleter)(void *),
+    LlvmPmCGSCCPassCallback entrypoint)
+{
+    auto *MPM = reinterpret_cast<ModulePassManager *>(raw_mpm);
+    MPM->addPass(createModuleToPostOrderCGSCCPassAdaptor(
+        RustOwnedCGSCCPass(entrypoint, pass_data, pass_deleter)));
+}
+
+extern "C" void llvm_pm_raw_fpm_add_loop_pass(
+    void *raw_fpm, void *pass_data, void (*pass_deleter)(void *),
+    LlvmPmLoopPassCallback entrypoint)
+{
+    auto *FPM = reinterpret_cast<FunctionPassManager *>(raw_fpm);
+    FPM->addPass(createFunctionToLoopPassAdaptor(
+        RustOwnedLoopPass(entrypoint, pass_data, pass_deleter)));
 }

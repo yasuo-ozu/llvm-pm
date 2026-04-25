@@ -225,5 +225,9 @@ fn detect_macos_sdk_path() -> Option<String> {
         return None;
     }
     let sdk = String::from_utf8(output.stdout).ok()?.trim().to_string();
-    if sdk.is_empty() { None } else { Some(sdk) }
+    if sdk.is_empty() {
+        None
+    } else {
+        Some(sdk)
+    }
 }

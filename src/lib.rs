@@ -75,6 +75,8 @@ pub extern crate inkwell_09 as inkwell;
 
 pub mod traits;
 
+pub mod plugin;
+
 #[cfg(feature = "llvm-plugin-crate")]
 mod llvm_plugin_harness;
 
@@ -748,7 +750,7 @@ fn preserved_to_c(pa: traits::PreservedAnalyses) -> std::ffi::c_int {
 /// # Panics
 /// If `T::run_pass` panics, the unwind crosses an `extern "C"` boundary.
 /// Rust >= 1.71 aborts; older versions have undefined behavior.
-unsafe extern "C" fn module_pass_trampoline<T: LlvmModulePass>(
+pub(crate) unsafe extern "C" fn module_pass_trampoline<T: LlvmModulePass>(
     module: LLVMModuleRef,
     manager: *mut c_void,
     user_data: *mut c_void,
@@ -776,7 +778,7 @@ unsafe extern "C" fn module_pass_trampoline<T: LlvmModulePass>(
 /// # Panics
 /// If `T::run_pass` panics, the unwind crosses an `extern "C"` boundary.
 /// Rust >= 1.71 aborts; older versions have undefined behavior.
-unsafe extern "C" fn function_pass_trampoline<T: LlvmFunctionPass>(
+pub(crate) unsafe extern "C" fn function_pass_trampoline<T: LlvmFunctionPass>(
     function: LLVMValueRef,
     manager: *mut c_void,
     user_data: *mut c_void,
@@ -802,7 +804,7 @@ unsafe extern "C" fn function_pass_trampoline<T: LlvmFunctionPass>(
 /// # Panics
 /// If `T::run_pass` panics, the unwind crosses an `extern "C"` boundary.
 /// Rust >= 1.71 aborts; older versions have undefined behavior.
-unsafe extern "C" fn cgscc_pass_trampoline<T: LlvmCgsccPass>(
+pub(crate) unsafe extern "C" fn cgscc_pass_trampoline<T: LlvmCgsccPass>(
     function: LLVMValueRef,
     manager: *mut c_void,
     user_data: *mut c_void,
@@ -827,7 +829,7 @@ unsafe extern "C" fn cgscc_pass_trampoline<T: LlvmCgsccPass>(
 /// # Panics
 /// If `T::run_pass` panics, the unwind crosses an `extern "C"` boundary.
 /// Rust >= 1.71 aborts; older versions have undefined behavior.
-unsafe extern "C" fn loop_pass_trampoline<T: LlvmLoopPass>(
+pub(crate) unsafe extern "C" fn loop_pass_trampoline<T: LlvmLoopPass>(
     header: LLVMBasicBlockRef,
     manager: *mut c_void,
     user_data: *mut c_void,
