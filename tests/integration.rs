@@ -978,6 +978,432 @@ fn test_multithreaded_opt_pipelines() {
     }
 }
 
+// =========================================================================
+// Coverage improvement tests
+// =========================================================================
+
+// --- Options methods ---
+
+#[test]
+fn test_options_debug_logging() {
+    let (module, _func) = create_add_module();
+    let mut opts = Options::new();
+    opts.debug_logging(true);
+    let mut pm = ModulePassManager::with_opt_level(None, OptLevel::O1, Some(&opts))
+        .expect("Failed to create PM with debug logging");
+    pm.run(&module).expect("Failed to run passes");
+}
+
+#[test]
+fn test_options_optimizer_early_ep() {
+    let (module, _func) = create_add_module();
+    let mut opts = Options::new();
+    opts.add_optimizer_early_ep("function(dce)");
+    let mut pm = ModulePassManager::with_opt_level(None, OptLevel::O2, Some(&opts))
+        .expect("Failed to create PM with optimizer_early EP");
+    pm.run(&module).expect("Failed to run passes");
+}
+
+#[test]
+fn test_options_optimizer_last_ep() {
+    let (module, _func) = create_add_module();
+    let mut opts = Options::new();
+    opts.add_optimizer_last_ep("function(dce)");
+    let mut pm = ModulePassManager::with_opt_level(None, OptLevel::O2, Some(&opts))
+        .expect("Failed to create PM with optimizer_last EP");
+    pm.run(&module).expect("Failed to run passes");
+}
+
+#[test]
+fn test_options_vectorizer_start_ep() {
+    let (module, _func) = create_add_module();
+    let mut opts = Options::new();
+    opts.add_vectorizer_start_ep("dce");
+    let mut pm = ModulePassManager::with_opt_level(None, OptLevel::O2, Some(&opts))
+        .expect("Failed to create PM with vectorizer_start EP");
+    pm.run(&module).expect("Failed to run passes");
+}
+
+#[test]
+fn test_options_pipeline_start_ep() {
+    let (module, _func) = create_add_module();
+    let mut opts = Options::new();
+    opts.add_pipeline_start_ep("function(dce)");
+    let mut pm = ModulePassManager::with_opt_level(None, OptLevel::O2, Some(&opts))
+        .expect("Failed to create PM with pipeline_start EP");
+    pm.run(&module).expect("Failed to run passes");
+}
+
+#[test]
+fn test_options_pipeline_early_simplification_ep() {
+    let (module, _func) = create_add_module();
+    let mut opts = Options::new();
+    opts.add_pipeline_early_simplification_ep("function(dce)");
+    let mut pm = ModulePassManager::with_opt_level(None, OptLevel::O2, Some(&opts))
+        .expect("Failed to create PM with pipeline_early_simplification EP");
+    pm.run(&module).expect("Failed to run passes");
+}
+
+// --- Error paths ---
+
+#[test]
+fn test_empty_pipeline_string() {
+    let result = ModulePassManager::with_pipeline(None, "", None);
+    // Empty pipeline is accepted by LLVM (no-op pipeline), so this should succeed.
+    // If LLVM rejects it, it returns an error - either way we exercise the path.
+    let _ = result;
+}
+
+#[test]
+fn test_pipeline_string_with_null_byte() {
+    let result = ModulePassManager::with_pipeline(None, "instcombine\0dce", None);
+    assert!(result.is_err(), "Pipeline with null byte should fail");
+}
+
+#[test]
+fn test_function_pipeline_with_null_byte() {
+    let result = FunctionPassManager::with_pipeline(None, "inst\0combine", None);
+    assert!(
+        result.is_err(),
+        "Function pipeline with null byte should fail"
+    );
+}
+
+// --- Edge cases ---
+
+#[test]
+fn test_empty_module_pm_run() {
+    let module = create_test_module();
+    let mut pm = ModulePassManager::new(None, None).expect("Failed to create empty PM");
+    pm.run(&module).expect("Empty PM run should succeed");
+}
+
+#[test]
+fn test_empty_function_pm_run() {
+    let (_module, func) = create_add_module();
+    let mut fpm = FunctionPassManager::new(None, None).expect("Failed to create empty FPM");
+    fpm.run(func).expect("Empty FPM run should succeed");
+}
+
+#[test]
+fn test_pm_run_twice() {
+    let (module, _func) = create_add_module();
+    let count = Arc::new(AtomicU32::new(0));
+    let mut pm = ModulePassManager::new(None, None).expect("Failed to create empty PM");
+    pm.add_pass(FunctionCounter {
+        count: count.clone(),
+    });
+    pm.run(&module).expect("First run should succeed");
+    pm.run(&module).expect("Second run should succeed");
+    assert_eq!(
+        count.load(Ordering::SeqCst),
+        2,
+        "Pass should have run twice"
+    );
+}
+
+#[test]
+fn test_fpm_run_twice() {
+    let (_module, func) = create_add_module();
+    let count = Arc::new(AtomicU32::new(0));
+    let mut fpm = FunctionPassManager::new(None, None).expect("Failed to create empty FPM");
+    fpm.add_pass(FnPassCounter {
+        count: count.clone(),
+    });
+    fpm.run(func).expect("First run should succeed");
+    fpm.run(func).expect("Second run should succeed");
+    assert_eq!(
+        count.load(Ordering::SeqCst),
+        2,
+        "Function pass should have run twice"
+    );
+}
+
+/// Helper: create a module with 3 functions.
+fn create_multi_fn_module() -> inkwell::module::Module<'static> {
+    let context = Box::leak(Box::new(Context::create()));
+    let module = context.create_module("multi_fn");
+    let void_ty = context.void_type();
+    let fn_ty = void_ty.fn_type(&[], false);
+    for name in &["fn_a", "fn_b", "fn_c"] {
+        let func = module.add_function(name, fn_ty, None);
+        let bb = context.append_basic_block(func, "entry");
+        let builder = context.create_builder();
+        builder.position_at_end(bb);
+        builder.build_return(None).unwrap();
+    }
+    module
+}
+
+#[test]
+fn test_module_with_multiple_functions() {
+    let module = create_multi_fn_module();
+    let count = Arc::new(AtomicU32::new(0));
+    let mut pm = ModulePassManager::new(None, None).expect("Failed to create empty PM");
+    pm.add_pass(FunctionCounter {
+        count: count.clone(),
+    });
+    pm.run(&module).expect("Failed to run passes");
+    assert_eq!(
+        count.load(Ordering::SeqCst),
+        3,
+        "Should have counted 3 functions"
+    );
+}
+
+// --- LTO variant coverage ---
+
+#[test]
+fn test_lto_all_opt_levels() {
+    let levels = [
+        OptLevel::O0,
+        OptLevel::O1,
+        OptLevel::O2,
+        OptLevel::O3,
+        OptLevel::Os,
+        OptLevel::Oz,
+    ];
+    for level in levels {
+        let module = create_test_module();
+        let mut pm = ModulePassManager::with_lto(None, level, None)
+            .unwrap_or_else(|e| panic!("Failed to create LTO PM for {:?}: {}", level, e));
+        pm.run(&module)
+            .unwrap_or_else(|e| panic!("Failed to run LTO passes for {:?}: {}", level, e));
+    }
+}
+
+#[test]
+fn test_lto_with_target_machine() {
+    Target::initialize_all(&InitializationConfig::default());
+    let triple = TargetMachine::get_default_triple();
+    let target = Target::from_triple(&triple).expect("Failed to get target from triple");
+    let tm = target
+        .create_target_machine(
+            &triple,
+            "",
+            "",
+            inkwell::OptimizationLevel::Default,
+            RelocMode::Default,
+            CodeModel::Default,
+        )
+        .expect("Failed to create target machine");
+
+    let (module, _func) = create_add_module();
+    let mut pm = ModulePassManager::with_lto(Some(&tm), OptLevel::O2, None)
+        .expect("Failed to create LTO PM with TM");
+    pm.run(&module).expect("Failed to run LTO passes");
+}
+
+// --- Analysis cache tests ---
+
+struct CgsccCacheTestAnalysis;
+
+impl LlvmCgsccAnalysis for CgsccCacheTestAnalysis {
+    type Result = u32;
+    fn run_analysis(
+        &self,
+        _function: &inkwell::values::FunctionValue<'_>,
+        _manager: &CgsccAnalysisManager,
+    ) -> Self::Result {
+        42
+    }
+    fn id() -> *const u8 {
+        static ID: u8 = 0;
+        &ID
+    }
+}
+
+struct CgsccCacheProber {
+    cached_none_count: Arc<AtomicU32>,
+    cached_hit_count: Arc<AtomicU32>,
+    registered: Arc<AtomicU32>,
+}
+
+impl LlvmCgsccPass for CgsccCacheProber {
+    fn run_pass(
+        &self,
+        function: &mut inkwell::values::FunctionValue<'_>,
+        manager: &CgsccAnalysisManager,
+    ) -> PreservedAnalyses {
+        if self
+            .registered
+            .compare_exchange(0, 1, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+        {
+            manager.add_analysis(CgsccCacheTestAnalysis);
+        }
+
+        // First check: cached result should be None
+        if manager
+            .get_cached_result::<CgsccCacheTestAnalysis>(function)
+            .is_none()
+        {
+            self.cached_none_count.fetch_add(1, Ordering::SeqCst);
+        }
+
+        // Compute the result
+        let val = *manager.get_result::<CgsccCacheTestAnalysis>(function);
+        assert_eq!(val, 42);
+
+        // Second check: cached result should now be Some
+        if manager
+            .get_cached_result::<CgsccCacheTestAnalysis>(function)
+            .is_some()
+        {
+            self.cached_hit_count.fetch_add(1, Ordering::SeqCst);
+        }
+
+        PreservedAnalyses::All
+    }
+}
+
+#[test]
+fn test_cgscc_analysis_caching() {
+    let (module, _func) = create_add_module();
+    let cached_none_count = Arc::new(AtomicU32::new(0));
+    let cached_hit_count = Arc::new(AtomicU32::new(0));
+    let registered = Arc::new(AtomicU32::new(0));
+    let mut pm = ModulePassManager::new(None, None).expect("Failed to create empty PM");
+    pm.add_cgscc_pass(CgsccCacheProber {
+        cached_none_count: cached_none_count.clone(),
+        cached_hit_count: cached_hit_count.clone(),
+        registered: registered.clone(),
+    });
+    pm.run(&module).expect("Failed to run");
+    assert!(
+        cached_none_count.load(Ordering::SeqCst) > 0,
+        "Should have seen uncached result"
+    );
+    assert!(
+        cached_hit_count.load(Ordering::SeqCst) > 0,
+        "Should have seen cached result"
+    );
+}
+
+struct LoopCacheTestAnalysis;
+
+impl LlvmLoopAnalysis for LoopCacheTestAnalysis {
+    type Result = u32;
+    fn run_analysis(
+        &self,
+        _loop_header: llvm_pm::traits::LLVMBasicBlockRef,
+        _manager: &LoopAnalysisManager,
+    ) -> Self::Result {
+        99
+    }
+    fn id() -> *const u8 {
+        static ID: u8 = 0;
+        &ID
+    }
+}
+
+struct LoopCacheProber {
+    cached_none_count: Arc<AtomicU32>,
+    cached_hit_count: Arc<AtomicU32>,
+    registered: Arc<AtomicU32>,
+}
+
+impl LlvmLoopPass for LoopCacheProber {
+    fn run_pass(
+        &self,
+        loop_header: llvm_pm::traits::LLVMBasicBlockRef,
+        manager: &LoopAnalysisManager,
+    ) -> PreservedAnalyses {
+        if self
+            .registered
+            .compare_exchange(0, 1, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+        {
+            manager.add_analysis(LoopCacheTestAnalysis);
+        }
+
+        if manager
+            .get_cached_result::<LoopCacheTestAnalysis>(loop_header)
+            .is_none()
+        {
+            self.cached_none_count.fetch_add(1, Ordering::SeqCst);
+        }
+
+        let val = *manager.get_result::<LoopCacheTestAnalysis>(loop_header);
+        assert_eq!(val, 99);
+
+        if manager
+            .get_cached_result::<LoopCacheTestAnalysis>(loop_header)
+            .is_some()
+        {
+            self.cached_hit_count.fetch_add(1, Ordering::SeqCst);
+        }
+
+        PreservedAnalyses::All
+    }
+}
+
+#[test]
+fn test_loop_analysis_caching() {
+    let (_module, func) = create_loop_module();
+    let cached_none_count = Arc::new(AtomicU32::new(0));
+    let cached_hit_count = Arc::new(AtomicU32::new(0));
+    let registered = Arc::new(AtomicU32::new(0));
+    let mut fpm = FunctionPassManager::new(None, None).expect("Failed to create empty FPM");
+    fpm.add_loop_pass(LoopCacheProber {
+        cached_none_count: cached_none_count.clone(),
+        cached_hit_count: cached_hit_count.clone(),
+        registered: registered.clone(),
+    });
+    fpm.run(func).expect("Failed to run");
+    assert!(
+        cached_none_count.load(Ordering::SeqCst) > 0,
+        "Should have seen uncached loop result"
+    );
+    assert!(
+        cached_hit_count.load(Ordering::SeqCst) > 0,
+        "Should have seen cached loop result"
+    );
+}
+
+// --- Debug/Display trait tests ---
+
+#[test]
+fn test_error_display() {
+    let result = ModulePassManager::with_pipeline(None, "this-is-not-a-real-pass", None);
+    let err = result.unwrap_err();
+    let display = format!("{}", err);
+    assert!(!display.is_empty(), "Error Display should produce output");
+}
+
+#[test]
+fn test_error_std_error_trait() {
+    let result = ModulePassManager::with_pipeline(None, "this-is-not-a-real-pass", None);
+    let err = result.unwrap_err();
+    // Verify it implements std::error::Error
+    let _: &dyn std::error::Error = &err;
+    // source() should be None (no underlying cause)
+    assert!(
+        std::error::Error::source(&err).is_none(),
+        "Error source should be None"
+    );
+}
+
+#[test]
+fn test_module_pm_debug() {
+    let pm = ModulePassManager::new(None, None).expect("Failed to create empty PM");
+    let debug = format!("{:?}", pm);
+    assert!(
+        debug.contains("ModulePassManager"),
+        "Debug should contain type name"
+    );
+}
+
+#[test]
+fn test_function_pm_debug() {
+    let fpm = FunctionPassManager::new(None, None).expect("Failed to create empty FPM");
+    let debug = format!("{:?}", fpm);
+    assert!(
+        debug.contains("FunctionPassManager"),
+        "Debug should contain type name"
+    );
+}
+
 #[cfg(feature = "llvm-plugin-crate")]
 struct PluginModulePass {
     count: Arc<AtomicU32>,
