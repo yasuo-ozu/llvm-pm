@@ -105,6 +105,7 @@ type AnalysisKey = *const u8;
 #[cfg(all(
     feature = "llvm-plugin-crate",
     any(
+        feature = "llvm18-1",
         feature = "llvm19-1",
         feature = "llvm20-1",
         feature = "llvm21-1",
@@ -112,7 +113,7 @@ type AnalysisKey = *const u8;
     )
 ))]
 compile_error!(
-    "`llvm-plugin-crate` supports llvm-plugin-compatible LLVM features (llvm10-0 .. llvm18-1)."
+    "`llvm-plugin-crate` supports llvm-plugin-compatible LLVM features (llvm10-0 .. llvm7-0)."
 );
 
 pub struct ModuleAnalysisManager {

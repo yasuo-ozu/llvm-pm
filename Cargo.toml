@@ -4,7 +4,7 @@ resolver = "2"
 
 [package]
 name = "llvm-pm"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2021"
 rust-version = "1.71"
 license = "MIT"
@@ -67,30 +67,15 @@ llvm17-0 = [
   "inkwell_05/llvm17-0",
   "llvm-plugin?/llvm17-0",
 ]
-llvm18-1 = [
-  "llvm-pm-sys/llvm18-1",
-  "inkwell_09",
-  "inkwell_09/llvm18-1",
-  "llvm-plugin?/llvm18-1",
-]
-llvm19-1 = [
-  "llvm-pm-sys/llvm19-1",
-  "inkwell_09",
-  "inkwell_09/llvm19-1",
-  "llvm-plugin?/llvm19-1",
-]
-llvm20-1 = [
-  "llvm-pm-sys/llvm20-1",
-  "inkwell_09",
-  "inkwell_09/llvm20-1",
-  "llvm-plugin?/llvm20-1",
-]
+llvm18-1 = ["llvm-pm-sys/llvm18-1", "inkwell_09", "inkwell_09/llvm18-1"]
+llvm19-1 = ["llvm-pm-sys/llvm19-1", "inkwell_09", "inkwell_09/llvm19-1"]
+llvm20-1 = ["llvm-pm-sys/llvm20-1", "inkwell_09", "inkwell_09/llvm20-1"]
 llvm21-1 = ["llvm-pm-sys/llvm21-1", "inkwell_09", "inkwell_09/llvm21-1"]
 llvm22-1 = ["llvm-pm-sys/llvm22-1", "inkwell_09", "inkwell_09/llvm22-1"]
 
 [dependencies]
-llvm-pm-sys = { path = "./llvm-pm-sys", default-features = false, version = "0.2.0" }
-llvm-pm-macros = { path = "./llvm-pm-macros", version = "0.2.0", optional = true }
+llvm-pm-sys = { path = "./llvm-pm-sys", default-features = false, version = "0.2.1" }
+llvm-pm-macros = { path = "./llvm-pm-macros", version = "0.2.1", optional = true }
 llvm-plugin = { version = "0.6", default-features = false, optional = true }
 inkwell_05 = { package = "inkwell", version = ">=0.5, <0.9", default-features = false, optional = true }
 inkwell_09 = { package = "inkwell", version = ">=0.9, <0.11", default-features = false, optional = true }

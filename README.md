@@ -25,9 +25,9 @@ and has compatibility with [llvm-plugin](https://crates.io/crates/llvm-plugin)
 | `llvm15-0` | 15.x | Yes |
 | `llvm16-0` | 16.x | Yes |
 | `llvm17-0` | 17.x | Yes |
-| `llvm18-1` (default) | 18.x | Yes |
-| `llvm19-1` | 19.x | Yes |
-| `llvm20-1` | 20.x | Yes |
+| `llvm18-1` (default) | 18.x | No |
+| `llvm19-1` | 19.x | No |
+| `llvm20-1` | 20.x | No |
 | `llvm21-1` | 21.x | No |
 | `llvm22-1` | 22.x | No |
 
