@@ -9,8 +9,8 @@ use llvm_pm::traits::{
     LlvmLoopPass, LlvmModuleAnalysis, LlvmModulePass, PreservedAnalyses,
 };
 use llvm_pm::{
-    CgsccAnalysisManager, FunctionPassManager, LoopAnalysisManager, ModulePassManager, OptLevel,
-    Options,
+    CGSCCPassManager, CgsccAnalysisManager, FunctionPassManager, LoopAnalysisManager,
+    ModulePassManager, OptLevel, Options,
 };
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
@@ -1650,4 +1650,179 @@ fn test_llvm_plugin_function_pass_and_analysis_bridge() {
 
     assert_eq!(pass_count.load(Ordering::SeqCst), 1);
     assert_eq!(analysis_count.load(Ordering::SeqCst), 1);
+}
+
+// =========================================================================
+// Additional plugin API tests
+// =========================================================================
+
+/// Verify PassPluginLibraryInfo can be manually constructed with correct fields.
+#[test]
+fn test_pass_plugin_library_info_construction() {
+    extern "C" fn dummy_registrar(_: *mut std::ffi::c_void) {}
+    let info = llvm_pm::plugin::PassPluginLibraryInfo {
+        api_version: llvm_pm::plugin::plugin_api_version(),
+        plugin_name: b"my-plugin\0".as_ptr(),
+        plugin_version: b"0.1.0\0".as_ptr(),
+        plugin_registrar: dummy_registrar,
+    };
+    assert_eq!(info.api_version, 1);
+    let name = unsafe { std::ffi::CStr::from_ptr(info.plugin_name as *const std::ffi::c_char) };
+    assert_eq!(name.to_str().unwrap(), "my-plugin");
+    let version =
+        unsafe { std::ffi::CStr::from_ptr(info.plugin_version as *const std::ffi::c_char) };
+    assert_eq!(version.to_str().unwrap(), "0.1.0");
+    assert_eq!(
+        info.plugin_registrar as *const () as usize,
+        dummy_registrar as *const () as usize
+    );
+}
+
+/// Verify PipelineParsing derives: Clone, Copy, Debug, PartialEq, Eq.
+#[test]
+fn test_plugin_pipeline_parsing_traits() {
+    let a = llvm_pm::plugin::PipelineParsing::Parsed;
+    let b = a; // Copy
+    let c = a.clone(); // Clone
+    assert_eq!(a, b);
+    assert_eq!(a, c);
+
+    let d = llvm_pm::plugin::PipelineParsing::NotParsed;
+    assert_ne!(a, d);
+
+    // Debug
+    let debug_str = format!("{:?}", a);
+    assert!(debug_str.contains("Parsed"));
+    let debug_str2 = format!("{:?}", d);
+    assert!(debug_str2.contains("NotParsed"));
+}
+
+// =========================================================================
+// CGSCCPassManager tests
+// =========================================================================
+
+#[test]
+fn test_cgscc_pm_is_send() {
+    fn assert_send<T: Send>() {}
+    assert_send::<CGSCCPassManager<'static>>();
+}
+
+#[test]
+fn test_cgscc_pm_basic() {
+    let (module, _func) = create_add_module();
+    let count = Arc::new(AtomicU32::new(0));
+    let mut pm = CGSCCPassManager::new(None, None).expect("Failed to create CGSCC PM");
+    pm.add_pass(CgsccPassCounter {
+        count: count.clone(),
+    });
+    pm.run(&module).expect("Failed to run CGSCC PM");
+    assert!(
+        count.load(Ordering::SeqCst) > 0,
+        "CGSCC pass should have run"
+    );
+}
+
+#[test]
+fn test_cgscc_pm_with_function_pass() {
+    let (module, _func) = create_add_module();
+    let count = Arc::new(AtomicU32::new(0));
+    let mut pm = CGSCCPassManager::new(None, None).expect("Failed to create CGSCC PM");
+    pm.add_function_pass(FnPassCounter {
+        count: count.clone(),
+    });
+    pm.run(&module)
+        .expect("Failed to run CGSCC PM with function pass");
+    assert!(
+        count.load(Ordering::SeqCst) > 0,
+        "Function pass via CGSCC should have run"
+    );
+}
+
+#[test]
+fn test_cgscc_pm_with_loop_pass() {
+    let (module, _func) = create_loop_module();
+    let count = Arc::new(AtomicU32::new(0));
+    let mut pm = CGSCCPassManager::new(None, None).expect("Failed to create CGSCC PM");
+    pm.add_loop_pass(LoopPassCounter {
+        count: count.clone(),
+    });
+    pm.run(&module)
+        .expect("Failed to run CGSCC PM with loop pass");
+    assert!(
+        count.load(Ordering::SeqCst) > 0,
+        "Loop pass via CGSCC should have run"
+    );
+}
+
+#[test]
+fn test_cgscc_pm_empty_run() {
+    let module = create_test_module();
+    let mut pm = CGSCCPassManager::new(None, None).expect("Failed to create CGSCC PM");
+    pm.run(&module).expect("Empty CGSCC PM run should succeed");
+}
+
+#[test]
+fn test_cgscc_pm_multiple_passes() {
+    let (module, _func) = create_add_module();
+    let cgscc_count = Arc::new(AtomicU32::new(0));
+    let fn_count = Arc::new(AtomicU32::new(0));
+    let mut pm = CGSCCPassManager::new(None, None).expect("Failed to create CGSCC PM");
+    pm.add_pass(CgsccPassCounter {
+        count: cgscc_count.clone(),
+    });
+    pm.add_function_pass(FnPassCounter {
+        count: fn_count.clone(),
+    });
+    pm.run(&module)
+        .expect("Failed to run CGSCC PM with multiple passes");
+    assert!(
+        cgscc_count.load(Ordering::SeqCst) > 0,
+        "CGSCC pass should have run"
+    );
+    assert!(
+        fn_count.load(Ordering::SeqCst) > 0,
+        "Function pass via CGSCC should have run"
+    );
+}
+
+#[test]
+fn test_cgscc_pm_debug() {
+    let pm = CGSCCPassManager::new(None, None).expect("Failed to create CGSCC PM");
+    let debug = format!("{:?}", pm);
+    assert!(
+        debug.contains("CGSCCPassManager"),
+        "Debug should contain type name"
+    );
+}
+
+#[test]
+fn test_module_pm_add_function_pass_via_cgscc() {
+    let (module, _func) = create_add_module();
+    let count = Arc::new(AtomicU32::new(0));
+    let mut pm = ModulePassManager::new(None, None).expect("Failed to create empty PM");
+    pm.add_function_pass_via_cgscc(FnPassCounter {
+        count: count.clone(),
+    });
+    pm.run(&module)
+        .expect("Failed to run module PM with function pass via CGSCC");
+    assert!(
+        count.load(Ordering::SeqCst) > 0,
+        "Function pass via CGSCC should have run"
+    );
+}
+
+#[test]
+fn test_module_pm_add_loop_pass_via_cgscc() {
+    let (module, _func) = create_loop_module();
+    let count = Arc::new(AtomicU32::new(0));
+    let mut pm = ModulePassManager::new(None, None).expect("Failed to create empty PM");
+    pm.add_loop_pass_via_cgscc(LoopPassCounter {
+        count: count.clone(),
+    });
+    pm.run(&module)
+        .expect("Failed to run module PM with loop pass via CGSCC");
+    assert!(
+        count.load(Ordering::SeqCst) > 0,
+        "Loop pass via CGSCC should have run"
+    );
 }

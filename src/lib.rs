@@ -77,6 +77,11 @@ pub mod traits;
 
 pub mod plugin;
 
+// Re-export the #[plugin] attribute macro at crate root for ergonomic usage:
+// #[llvm_pm::plugin(name = "...", version = "...")]
+#[cfg(feature = "plugin-macros")]
+pub use llvm_pm_macros::plugin;
+
 #[cfg(feature = "llvm-plugin-crate")]
 mod llvm_plugin_harness;
 
@@ -1075,6 +1080,51 @@ impl<'a> ModulePassManager<'a> {
         self._passes.push(boxed);
     }
 
+    /// Add a custom function pass adapted through the CGSCC level.
+    ///
+    /// The pass is wrapped with `Module → CGSCC → Function` adaptors, so it
+    /// runs on each function within the CGSCC traversal order.
+    pub fn add_function_pass_via_cgscc<P>(&mut self, pass: P)
+    where
+        P: LlvmFunctionPass + 'static,
+    {
+        let mut boxed = Box::new(pass);
+        let ptr = &mut *boxed as *mut P as *mut c_void;
+        // SAFETY: self.raw is a valid PM handle. function_pass_trampoline::<P> is the
+        // correct monomorphized trampoline. The pass pointer is valid for the
+        // lifetime of the PM because the Box is stored in _passes.
+        unsafe {
+            llvm_pm_sys::llvm_pm_add_function_pass_via_cgscc(
+                self.raw,
+                Some(function_pass_trampoline::<P>),
+                ptr,
+            );
+        }
+        self._passes.push(boxed);
+    }
+
+    /// Add a custom loop pass adapted through the CGSCC and function levels.
+    ///
+    /// The pass is wrapped with `Module → CGSCC → Function → Loop` adaptors.
+    pub fn add_loop_pass_via_cgscc<P>(&mut self, pass: P)
+    where
+        P: LlvmLoopPass + 'static,
+    {
+        let mut boxed = Box::new(pass);
+        let ptr = &mut *boxed as *mut P as *mut c_void;
+        // SAFETY: self.raw is a valid PM handle. loop_pass_trampoline::<P> is the
+        // correct monomorphized trampoline. The pass pointer is valid for the
+        // lifetime of the PM because the Box is stored in _passes.
+        unsafe {
+            llvm_pm_sys::llvm_pm_add_loop_pass_via_cgscc(
+                self.raw,
+                Some(loop_pass_trampoline::<P>),
+                ptr,
+            );
+        }
+        self._passes.push(boxed);
+    }
+
     /// Run the optimization passes on the given module.
     pub fn run(&mut self, module: &inkwell::module::Module<'_>) -> Result<(), Error> {
         // SAFETY: self.raw is a valid PM handle. module.as_mut_ptr() returns a valid
@@ -1270,3 +1320,156 @@ impl<'a> Drop for FunctionPassManager<'a> {
 // SAFETY: Same rationale as `ModulePassManager`: exclusively-owned C++ handle
 // and Rust Boxes. All mutating operations require `&mut self`.
 unsafe impl<'a> Send for FunctionPassManager<'a> {}
+
+// =========================================================================
+// CGSCCPassManager
+// =========================================================================
+
+/// A configured LLVM CGSCC pass manager using the new PassManager infrastructure.
+///
+/// Provides a type-level distinction for CGSCC-oriented pipelines. Internally
+/// backed by a module-level pass manager where each pass is adapted through the
+/// `Module → CGSCC` adaptor.
+///
+/// Supports adding CGSCC passes directly, as well as function and loop passes
+/// which are adapted through the CGSCC level (`CGSCC → Function` and
+/// `CGSCC → Function → Loop` respectively).
+///
+/// The lifetime `'a` is tied to the borrowed [`inkwell::targets::TargetMachine`],
+/// ensuring the target machine outlives the pass manager.
+pub struct CGSCCPassManager<'a> {
+    raw: llvm_pm_sys::LlvmPmPassManagerRef,
+    _passes: Vec<Box<dyn std::any::Any>>,
+    _phantom: PhantomData<&'a ()>,
+}
+
+impl<'a> fmt::Debug for CGSCCPassManager<'a> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CGSCCPassManager")
+            .field("raw", &self.raw)
+            .finish()
+    }
+}
+
+impl<'a> CGSCCPassManager<'a> {
+    /// Create an empty CGSCC pass manager.
+    ///
+    /// Use [`add_pass()`](CGSCCPassManager::add_pass),
+    /// [`add_function_pass()`](CGSCCPassManager::add_function_pass), or
+    /// [`add_loop_pass()`](CGSCCPassManager::add_loop_pass) to add passes.
+    pub fn new(
+        target_machine: Option<&'a inkwell::targets::TargetMachine>,
+        options: Option<&Options>,
+    ) -> Result<Self, Error> {
+        let tm = target_machine.map_or(ptr::null_mut(), |t| t.as_mut_ptr());
+        let opts = options.map_or(ptr::null_mut(), |o| o.raw);
+        let mut err_msg: *mut std::ffi::c_char = ptr::null_mut();
+
+        // SAFETY: tm is either null or valid. opts is either null or valid.
+        let raw = unsafe { llvm_pm_sys::llvm_pm_create_empty_module(tm, opts, &mut err_msg) };
+
+        if raw.is_null() {
+            // SAFETY: On error, the C++ stub sets err_msg to a valid malloc'd string.
+            Err(unsafe { consume_c_error(err_msg) })
+        } else {
+            Ok(Self {
+                raw,
+                _passes: Vec::new(),
+                _phantom: PhantomData,
+            })
+        }
+    }
+
+    /// Add a custom CGSCC pass.
+    ///
+    /// The pass is adapted into the module pipeline via
+    /// `createModuleToPostOrderCGSCCPassAdaptor` and invoked for each function
+    /// in each SCC.
+    pub fn add_pass<P>(&mut self, pass: P)
+    where
+        P: LlvmCgsccPass + 'static,
+    {
+        let mut boxed = Box::new(pass);
+        let ptr = &mut *boxed as *mut P as *mut c_void;
+        // SAFETY: self.raw is a valid PM handle. cgscc_pass_trampoline::<P> is the
+        // correct monomorphized trampoline. The pass pointer is valid for the
+        // lifetime of the PM because the Box is stored in _passes.
+        unsafe {
+            llvm_pm_sys::llvm_pm_add_cgscc_pass(self.raw, Some(cgscc_pass_trampoline::<P>), ptr);
+        }
+        self._passes.push(boxed);
+    }
+
+    /// Add a custom function pass adapted through the CGSCC level.
+    ///
+    /// The pass is wrapped with `Module → CGSCC → Function` adaptors, so it
+    /// runs on each function within the CGSCC traversal order.
+    pub fn add_function_pass<P>(&mut self, pass: P)
+    where
+        P: LlvmFunctionPass + 'static,
+    {
+        let mut boxed = Box::new(pass);
+        let ptr = &mut *boxed as *mut P as *mut c_void;
+        // SAFETY: self.raw is a valid PM handle. function_pass_trampoline::<P> is the
+        // correct monomorphized trampoline. The pass pointer is valid for the
+        // lifetime of the PM because the Box is stored in _passes.
+        unsafe {
+            llvm_pm_sys::llvm_pm_add_function_pass_via_cgscc(
+                self.raw,
+                Some(function_pass_trampoline::<P>),
+                ptr,
+            );
+        }
+        self._passes.push(boxed);
+    }
+
+    /// Add a custom loop pass adapted through the CGSCC and function levels.
+    ///
+    /// The pass is wrapped with `Module → CGSCC → Function → Loop` adaptors.
+    pub fn add_loop_pass<P>(&mut self, pass: P)
+    where
+        P: LlvmLoopPass + 'static,
+    {
+        let mut boxed = Box::new(pass);
+        let ptr = &mut *boxed as *mut P as *mut c_void;
+        // SAFETY: self.raw is a valid PM handle. loop_pass_trampoline::<P> is the
+        // correct monomorphized trampoline. The pass pointer is valid for the
+        // lifetime of the PM because the Box is stored in _passes.
+        unsafe {
+            llvm_pm_sys::llvm_pm_add_loop_pass_via_cgscc(
+                self.raw,
+                Some(loop_pass_trampoline::<P>),
+                ptr,
+            );
+        }
+        self._passes.push(boxed);
+    }
+
+    /// Run the CGSCC passes on the given module.
+    pub fn run(&mut self, module: &inkwell::module::Module<'_>) -> Result<(), Error> {
+        // SAFETY: self.raw is a valid PM handle. module.as_mut_ptr() returns a valid
+        // LLVMModuleRef. &mut self ensures exclusive access to stored passes.
+        let err = unsafe { llvm_pm_sys::llvm_pm_run(self.raw, module.as_mut_ptr()) };
+        if err.is_null() {
+            Ok(())
+        } else {
+            // SAFETY: On error, llvm_pm_run returns a valid malloc'd error string.
+            Err(unsafe { consume_c_error(err) })
+        }
+    }
+}
+
+impl<'a> Drop for CGSCCPassManager<'a> {
+    fn drop(&mut self) {
+        // SAFETY: self.raw is a valid PM handle, and Drop runs at most once.
+        // The C++ side is disposed first; _passes (stored Box<dyn Any>) are
+        // dropped automatically afterward.
+        unsafe {
+            llvm_pm_sys::llvm_pm_dispose(self.raw);
+        }
+    }
+}
+
+// SAFETY: Same rationale as `ModulePassManager`: exclusively-owned C++ handle
+// and Rust Boxes. All mutating operations require `&mut self`.
+unsafe impl<'a> Send for CGSCCPassManager<'a> {}

@@ -431,6 +431,34 @@ impl PluginModulePassManager {
             );
         }
     }
+
+    /// Add a custom function pass adapted through the CGSCC level.
+    pub fn add_function_pass_via_cgscc<P: LlvmFunctionPass + 'static>(&mut self, pass: P) {
+        let boxed = Box::into_raw(Box::new(pass));
+
+        unsafe {
+            llvm_pm_sys::llvm_pm_raw_mpm_add_function_pass_via_cgscc(
+                self.inner,
+                boxed as *mut c_void,
+                Some(pass_deleter::<P>),
+                Some(crate::function_pass_trampoline::<P>),
+            );
+        }
+    }
+
+    /// Add a custom loop pass adapted through the CGSCC and function levels.
+    pub fn add_loop_pass_via_cgscc<P: LlvmLoopPass + 'static>(&mut self, pass: P) {
+        let boxed = Box::into_raw(Box::new(pass));
+
+        unsafe {
+            llvm_pm_sys::llvm_pm_raw_mpm_add_loop_pass_via_cgscc(
+                self.inner,
+                boxed as *mut c_void,
+                Some(pass_deleter::<P>),
+                Some(crate::loop_pass_trampoline::<P>),
+            );
+        }
+    }
 }
 
 // =========================================================================

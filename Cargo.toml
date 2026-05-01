@@ -15,7 +15,7 @@ keywords = ["llvm", "pass-manager", "compiler", "optimization"]
 categories = ["compilers", "development-tools"]
 
 [features]
-default = ["llvm18-0", "llvm-plugin-crate"]
+default = ["llvm18-0", "llvm-plugin-crate", "plugin-macros"]
 llvm-plugin-crate = ["llvm-plugin"]
 plugin-macros = ["llvm-pm-macros"]
 no-llvm-linking = ["llvm-pm-sys/no-llvm-linking"]

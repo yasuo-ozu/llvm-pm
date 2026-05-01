@@ -521,6 +521,27 @@ extern "C" void llvm_pm_add_loop_pass(
         RustLoopPass(callback, user_data)));
 }
 
+extern "C" void llvm_pm_add_function_pass_via_cgscc(
+    LlvmPmPassManagerRef pm, LlvmPmFunctionPassCallback callback, void *user_data)
+{
+    if (!pm->MPM)
+        pm->MPM = std::make_unique<ModulePassManager>();
+    pm->MPM->addPass(createModuleToPostOrderCGSCCPassAdaptor(
+        createCGSCCToFunctionPassAdaptor(
+            RustFunctionPass(callback, user_data))));
+}
+
+extern "C" void llvm_pm_add_loop_pass_via_cgscc(
+    LlvmPmPassManagerRef pm, LlvmPmLoopPassCallback callback, void *user_data)
+{
+    if (!pm->MPM)
+        pm->MPM = std::make_unique<ModulePassManager>();
+    pm->MPM->addPass(createModuleToPostOrderCGSCCPassAdaptor(
+        createCGSCCToFunctionPassAdaptor(
+            createFunctionToLoopPassAdaptor(
+                RustLoopPass(callback, user_data)))));
+}
+
 // ===== Empty pass manager creation =====
 
 extern "C" LlvmPmPassManagerRef llvm_pm_create_empty_module(
@@ -877,4 +898,25 @@ extern "C" void llvm_pm_raw_fpm_add_loop_pass(
     auto *FPM = reinterpret_cast<FunctionPassManager *>(raw_fpm);
     FPM->addPass(createFunctionToLoopPassAdaptor(
         RustOwnedLoopPass(entrypoint, pass_data, pass_deleter)));
+}
+
+extern "C" void llvm_pm_raw_mpm_add_function_pass_via_cgscc(
+    void *raw_mpm, void *pass_data, void (*pass_deleter)(void *),
+    LlvmPmFunctionPassCallback entrypoint)
+{
+    auto *MPM = reinterpret_cast<ModulePassManager *>(raw_mpm);
+    MPM->addPass(createModuleToPostOrderCGSCCPassAdaptor(
+        createCGSCCToFunctionPassAdaptor(
+            RustOwnedFunctionPass(entrypoint, pass_data, pass_deleter))));
+}
+
+extern "C" void llvm_pm_raw_mpm_add_loop_pass_via_cgscc(
+    void *raw_mpm, void *pass_data, void (*pass_deleter)(void *),
+    LlvmPmLoopPassCallback entrypoint)
+{
+    auto *MPM = reinterpret_cast<ModulePassManager *>(raw_mpm);
+    MPM->addPass(createModuleToPostOrderCGSCCPassAdaptor(
+        createCGSCCToFunctionPassAdaptor(
+            createFunctionToLoopPassAdaptor(
+                RustOwnedLoopPass(entrypoint, pass_data, pass_deleter)))));
 }

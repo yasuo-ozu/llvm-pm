@@ -173,6 +173,14 @@ void llvm_pm_add_cgscc_pass(
 void llvm_pm_add_loop_pass(
     LlvmPmPassManagerRef pm, LlvmPmLoopPassCallback callback, void *user_data);
 
+/** Add a custom function pass adapted through CGSCC (module->CGSCC->function). */
+void llvm_pm_add_function_pass_via_cgscc(
+    LlvmPmPassManagerRef pm, LlvmPmFunctionPassCallback callback, void *user_data);
+
+/** Add a custom loop pass adapted through CGSCC (module->CGSCC->function->loop). */
+void llvm_pm_add_loop_pass_via_cgscc(
+    LlvmPmPassManagerRef pm, LlvmPmLoopPassCallback callback, void *user_data);
+
 /* =========================================================================
  * Empty pass manager creation (for custom-pass-only pipelines)
  * ========================================================================= */
@@ -319,6 +327,16 @@ void llvm_pm_raw_mpm_add_cgscc_pass(
 /** Add a custom loop pass to a raw FunctionPassManager (C++ side owns pass data). */
 void llvm_pm_raw_fpm_add_loop_pass(
     void *raw_fpm, void *pass_data, void (*pass_deleter)(void *),
+    LlvmPmLoopPassCallback entrypoint);
+
+/** Add a custom function pass to a raw ModulePassManager via CGSCC adaptor (C++ side owns pass data). */
+void llvm_pm_raw_mpm_add_function_pass_via_cgscc(
+    void *raw_mpm, void *pass_data, void (*pass_deleter)(void *),
+    LlvmPmFunctionPassCallback entrypoint);
+
+/** Add a custom loop pass to a raw ModulePassManager via CGSCC+function adaptor (C++ side owns pass data). */
+void llvm_pm_raw_mpm_add_loop_pass_via_cgscc(
+    void *raw_mpm, void *pass_data, void (*pass_deleter)(void *),
     LlvmPmLoopPassCallback entrypoint);
 
 #ifdef __cplusplus
