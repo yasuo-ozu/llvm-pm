@@ -15,7 +15,7 @@ keywords = ["llvm", "pass-manager", "compiler", "optimization"]
 categories = ["compilers", "development-tools"]
 
 [features]
-default = ["llvm18-0", "llvm-plugin-crate", "plugin-macros"]
+default = ["llvm18-1", "plugin-macros"]
 llvm-plugin-crate = ["llvm-plugin"]
 plugin-macros = ["llvm-pm-macros"]
 no-llvm-linking = ["llvm-pm-sys/no-llvm-linking"]
@@ -67,14 +67,24 @@ llvm17-0 = [
   "inkwell_05/llvm17-0",
   "llvm-plugin?/llvm17-0",
 ]
-llvm18-0 = [
-  "llvm-pm-sys/llvm18-0",
-  "inkwell_05",
-  "inkwell_05/llvm18-0",
-  "llvm-plugin?/llvm18-0",
+llvm18-1 = [
+  "llvm-pm-sys/llvm18-1",
+  "inkwell_09",
+  "inkwell_09/llvm18-1",
+  "llvm-plugin?/llvm18-1",
 ]
-llvm19-1 = ["llvm-pm-sys/llvm19-1", "inkwell_09", "inkwell_09/llvm19-1"]
-llvm20-1 = ["llvm-pm-sys/llvm20-1", "inkwell_09", "inkwell_09/llvm20-1"]
+llvm19-1 = [
+  "llvm-pm-sys/llvm19-1",
+  "inkwell_09",
+  "inkwell_09/llvm19-1",
+  "llvm-plugin?/llvm19-1",
+]
+llvm20-1 = [
+  "llvm-pm-sys/llvm20-1",
+  "inkwell_09",
+  "inkwell_09/llvm20-1",
+  "llvm-plugin?/llvm20-1",
+]
 llvm21-1 = ["llvm-pm-sys/llvm21-1", "inkwell_09", "inkwell_09/llvm21-1"]
 llvm22-1 = ["llvm-pm-sys/llvm22-1", "inkwell_09", "inkwell_09/llvm22-1"]
 

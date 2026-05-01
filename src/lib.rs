@@ -61,11 +61,11 @@
     feature = "llvm14-0",
     feature = "llvm15-0",
     feature = "llvm16-0",
-    feature = "llvm17-0",
-    feature = "llvm18-0"
+    feature = "llvm17-0"
 ))]
 pub extern crate inkwell_05 as inkwell;
 #[cfg(any(
+    feature = "llvm18-1",
     feature = "llvm19-1",
     feature = "llvm20-1",
     feature = "llvm21-1",
@@ -112,7 +112,7 @@ type AnalysisKey = *const u8;
     )
 ))]
 compile_error!(
-    "`llvm-plugin-crate` supports llvm-plugin-compatible LLVM features (llvm10-0 .. llvm18-0)."
+    "`llvm-plugin-crate` supports llvm-plugin-compatible LLVM features (llvm10-0 .. llvm18-1)."
 );
 
 pub struct ModuleAnalysisManager {

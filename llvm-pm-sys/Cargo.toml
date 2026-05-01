@@ -12,7 +12,7 @@ links = "llvm_pm"
 rust-version = "1.71"
 
 [features]
-default = ["llvm18-0"]
+default = []
 no-llvm-linking = [
   "llvm-sys-100?/no-llvm-linking",
   "llvm-sys-110?/no-llvm-linking",
@@ -22,7 +22,7 @@ no-llvm-linking = [
   "llvm-sys-150?/no-llvm-linking",
   "llvm-sys-160?/no-llvm-linking",
   "llvm-sys-170?/no-llvm-linking",
-  "llvm-sys-180?/no-llvm-linking",
+  "llvm-sys-181?/no-llvm-linking",
   "llvm-sys-191?/no-llvm-linking",
   "llvm-sys-201?/no-llvm-linking",
   "llvm-sys-211?/no-llvm-linking",
@@ -36,7 +36,7 @@ llvm14-0 = ["llvm-sys-140"]
 llvm15-0 = ["llvm-sys-150"]
 llvm16-0 = ["llvm-sys-160"]
 llvm17-0 = ["llvm-sys-170"]
-llvm18-0 = ["llvm-sys-180"]
+llvm18-1 = ["llvm-sys-181"]
 llvm19-1 = ["llvm-sys-191"]
 llvm20-1 = ["llvm-sys-201"]
 llvm21-1 = ["llvm-sys-211"]
@@ -51,7 +51,7 @@ llvm-sys-140 = { package = "llvm-sys", version = "140", optional = true }
 llvm-sys-150 = { package = "llvm-sys", version = "150", optional = true }
 llvm-sys-160 = { package = "llvm-sys", version = "160", optional = true }
 llvm-sys-170 = { package = "llvm-sys", version = "170", optional = true }
-llvm-sys-180 = { package = "llvm-sys", version = "180", optional = true }
+llvm-sys-181 = { package = "llvm-sys", version = "181", optional = true }
 llvm-sys-191 = { package = "llvm-sys", version = "191", optional = true }
 llvm-sys-201 = { package = "llvm-sys", version = "201", optional = true }
 llvm-sys-211 = { package = "llvm-sys", version = "211", optional = true }

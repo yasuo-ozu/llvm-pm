@@ -85,7 +85,7 @@ fn build_load_i32<'ctx>(
     feature = "llvm15-0",
     feature = "llvm16-0",
     feature = "llvm17-0",
-    feature = "llvm18-0",
+    feature = "llvm18-1",
     feature = "llvm19-1",
     feature = "llvm20-1",
     feature = "llvm21-1",
@@ -248,13 +248,13 @@ fn build_demo_module() -> inkwell::module::Module<'static> {
             feature = "llvm14-0",
             feature = "llvm15-0",
             feature = "llvm16-0",
-            feature = "llvm17-0",
-            feature = "llvm18-0"
+            feature = "llvm17-0"
         ))]
         {
             value.left().unwrap().into_int_value()
         }
         #[cfg(any(
+            feature = "llvm18-1",
             feature = "llvm19-1",
             feature = "llvm20-1",
             feature = "llvm21-1",
@@ -277,13 +277,13 @@ fn build_demo_module() -> inkwell::module::Module<'static> {
             feature = "llvm14-0",
             feature = "llvm15-0",
             feature = "llvm16-0",
-            feature = "llvm17-0",
-            feature = "llvm18-0"
+            feature = "llvm17-0"
         ))]
         {
             value.left().unwrap().into_int_value()
         }
         #[cfg(any(
+            feature = "llvm18-1",
             feature = "llvm19-1",
             feature = "llvm20-1",
             feature = "llvm21-1",

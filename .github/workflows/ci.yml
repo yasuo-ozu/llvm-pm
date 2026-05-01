@@ -104,15 +104,11 @@ jobs:
           LLVM_TAG="${{ matrix.llvm }}"
           LLVM_MAJOR="${LLVM_TAG%%.*}"
           LLVM_MINOR="$(echo "$LLVM_TAG" | cut -d. -f2)"
-          if [ "$LLVM_MAJOR" -le 18 ]; then
-            BASE_FEATURE="llvm${LLVM_MAJOR}-0"
-            if [ "$RUNNER_OS" = "Windows" ]; then
-              FEATURES="${BASE_FEATURE}"
-            else
-              FEATURES="${BASE_FEATURE},llvm-plugin-crate"
-            fi
+          BASE_FEATURE="llvm${LLVM_MAJOR}-${LLVM_MINOR}"
+          if [ "$LLVM_MAJOR" -le 20 -a "$RUNNER_OS" != "Windows" ]; then
+            FEATURES="${BASE_FEATURE},llvm-plugin-crate"
           else
-            FEATURES="llvm${LLVM_MAJOR}-${LLVM_MINOR}"
+            FEATURES="${BASE_FEATURE}"
           fi
           echo "LLVM_FEATURES=${FEATURES}" >> "$GITHUB_ENV"
 
@@ -164,7 +160,7 @@ jobs:
         run: cargo install cargo-tarpaulin
 
       - name: Run coverage
-        run: cargo tarpaulin --workspace --no-default-features --features llvm18-0 --out xml --output-dir coverage
+        run: cargo tarpaulin --workspace --no-default-features --features llvm-plugin-crate,llvm18-1 --out xml --output-dir coverage
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v4
