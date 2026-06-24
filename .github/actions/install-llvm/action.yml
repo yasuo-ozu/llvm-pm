@@ -72,15 +72,20 @@ runs:
           tar -xf "$archive" -C "$prefix_u"
         fi
 
-        # Some prebuilt Linux llvm-config binaries are linked against libtinfo.so.5,
-        # but current Ubuntu runners ship only libtinfo.so.6. Provide a compat symlink
-        # so llvm-config (and clang tools) load.
-        if [ "${RUNNER_OS}" = "Linux" ]; then
-          for d in /usr/lib/x86_64-linux-gnu /lib/x86_64-linux-gnu; do
-            if [ ! -e "$d/libtinfo.so.5" ] && [ -e "$d/libtinfo.so.6" ]; then
-              sudo ln -sf "$d/libtinfo.so.6" "$d/libtinfo.so.5" || true
-            fi
-          done
+        # Some prebuilt Linux llvm-config binaries are linked against the real
+        # ncurses5 libtinfo.so.5 (versioned symbol NCURSES_TINFO_5.0.*), which a
+        # symlink to libtinfo.so.6 does NOT satisfy. Install the actual libtinfo5;
+        # on newer Ubuntu (where it was dropped) fetch the jammy .deb.
+        if [ "${RUNNER_OS}" = "Linux" ] && ! ldconfig -p | grep -q 'libtinfo\.so\.5'; then
+          if ! sudo apt-get install -y -qq libtinfo5 2>/dev/null; then
+            for u in \
+              "http://archive.ubuntu.com/ubuntu/pool/universe/n/ncurses/libtinfo5_6.3-2ubuntu0.1_amd64.deb" \
+              "http://security.ubuntu.com/ubuntu/pool/universe/n/ncurses/libtinfo5_6.3-2ubuntu0.1_amd64.deb"; do
+              if curl -fsSL -o "$RUNNER_TEMP/libtinfo5.deb" "$u" 2>/dev/null; then
+                sudo dpkg -i "$RUNNER_TEMP/libtinfo5.deb" && break || true
+              fi
+            done
+          fi
         fi
 
         # The archives extract bin/ include/ lib/ directly; tolerate a single wrapper
