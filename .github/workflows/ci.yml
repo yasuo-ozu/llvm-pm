@@ -110,17 +110,12 @@ jobs:
           LLVM_TAG="${{ matrix.llvm }}"
           LLVM_MAJOR="${LLVM_TAG%%.*}"
           LLVM_MINOR="$(echo "$LLVM_TAG" | cut -d. -f2)"
-          BASE_FEATURE="llvm${LLVM_MAJOR}-${LLVM_MINOR}"
-          # `llvm-plugin` links LLVM dynamically (`-l dylib=LLVM`), which requires a
-          # libLLVM.so. apt (LLVM 13..17) ships it; the LLVM <=12 release archive /
-          # source builds do not, so enable `llvm-plugin-crate` only for 13..17.
-          # (LLVM 18+ uses inkwell 0.9, where `llvm-plugin-crate` is a compile_error.)
-          if [ "$LLVM_MAJOR" -ge 13 -a "$LLVM_MAJOR" -le 17 -a "$RUNNER_OS" != "Windows" ]; then
-            FEATURES="${BASE_FEATURE},llvm-plugin-crate"
-          else
-            FEATURES="${BASE_FEATURE}"
-          fi
-          echo "LLVM_FEATURES=${FEATURES}" >> "$GITHUB_ENV"
+          # `llvm-plugin-crate` is intentionally NOT exercised in CI: llvm-plugin
+          # links LLVM dynamically (`rustc-link-lib=dylib=LLVM` / `LLVM-C`), but the
+          # prebuilt LLVM from llvm-full ships static core libraries only (no
+          # libLLVM.so/.dylib), so it cannot link there. The feature still builds for
+          # users whose LLVM provides a shared library.
+          echo "LLVM_FEATURES=llvm${LLVM_MAJOR}-${LLVM_MINOR}" >> "$GITHUB_ENV"
 
       # Cache only the downloaded crate registry (small, shared), NOT ~/.cargo/git
       # or target/. The whole repo shares a 10 GB Actions cache budget; the
