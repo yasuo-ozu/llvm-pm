@@ -252,6 +252,18 @@ runs:
       with:
         arch: x64
 
+    # `shell: bash` is Git Bash, whose PATH always lists /usr/bin (and /mingw64/bin)
+    # ahead of the Windows PATH that msvc-dev-cmd extends. That makes Git's GNU
+    # link.exe (a coreutils hardlink tool) shadow MSVC's linker, so rustc's MSVC
+    # target invokes the wrong `link` ("/usr/bin/link: extra operand ..."). Remove
+    # the GNU link tools so rustc falls through to MSVC's link.exe on the Windows PATH.
+    - name: Remove GNU link.exe shadowing MSVC linker (Windows)
+      if: runner.os == 'Windows'
+      shell: bash
+      run: |
+        rm -f "/c/Program Files/Git/usr/bin/link.exe" "/usr/bin/link.exe" "/usr/bin/link" 2>/dev/null || true
+        echo "which link: $(which link 2>/dev/null || echo none)"
+
     - name: Build LLVM from source (Windows)
       if: runner.os == 'Windows' && steps.cache-llvm-windows.outputs.cache-hit != 'true'
       shell: bash
