@@ -93,6 +93,12 @@ runs:
           if [ ! -e /usr/lib/x86_64-linux-gnu/libtinfo.so.5 ] && [ -e /usr/lib/x86_64-linux-gnu/libtinfo.so.6 ]; then
             sudo ln -s /usr/lib/x86_64-linux-gnu/libtinfo.so.6 /usr/lib/x86_64-linux-gnu/libtinfo.so.5
           fi
+          # The prebuilt archive ships libLLVM-<major>.so but not an unversioned
+          # libLLVM.so; our build links `-lLLVM`, so add the symlink (mirrors the
+          # apt path below).
+          if [ ! -e "$LLVM_PREFIX/lib/libLLVM.so" ] && [ -e "$LLVM_PREFIX/lib/libLLVM-${LLVM_MAJOR}.so" ]; then
+            ln -s "libLLVM-${LLVM_MAJOR}.so" "$LLVM_PREFIX/lib/libLLVM.so"
+          fi
           if [ ! -x "$LLVM_PREFIX/bin/llvm-config" ]; then
             echo "llvm-config not found under extracted LLVM prefix: $LLVM_PREFIX" >&2
             ls -la "$LLVM_PREFIX/bin" >&2 || true
@@ -235,6 +241,16 @@ runs:
         path: C:\LLVM\${{ inputs.version }}
         key: ${{ runner.os }}-llvm-src-libxml2off-${{ inputs.version }}-v1
 
+    # Set up the MSVC toolchain on PATH so cmake's Ninja generator finds cl.exe.
+    # The "Visual Studio 17 2022" generator no longer reliably auto-detects VS on
+    # the current windows-latest image ("could not find any instance of Visual
+    # Studio"); Ninja + a primed MSVC environment is robust.
+    - name: Set up MSVC (Windows)
+      if: runner.os == 'Windows' && steps.cache-llvm-windows.outputs.cache-hit != 'true'
+      uses: ilammy/msvc-dev-cmd@v1
+      with:
+        arch: x64
+
     - name: Build LLVM from source (Windows)
       if: runner.os == 'Windows' && steps.cache-llvm-windows.outputs.cache-hit != 'true'
       shell: bash
@@ -246,19 +262,13 @@ runs:
         rm -rf "$install_root_u"
         rm -rf "$src_root" "$build_root"
         git clone --depth 1 --branch "llvmorg-${{ inputs.version }}" https://github.com/llvm/llvm-project "$src_root"
-        toolset_args=()
-        # LLVM 10/11 are often incompatible with the newest MSVC STL/toolset.
-        # Prefer VS2019-compatible toolset when available on GitHub runners.
-        if [ "${LLVM_MAJOR}" -le 11 ]; then
-          toolset_args=(-T v142)
-        fi
-        cmake -S "$src_root/llvm" -B "$build_root" -G "Visual Studio 17 2022" -A x64 \
-          "${toolset_args[@]}" \
+        cmake -S "$src_root/llvm" -B "$build_root" -G Ninja \
+          -DCMAKE_BUILD_TYPE=Release \
           -DCMAKE_INSTALL_PREFIX="$install_root_u" \
           -DLLVM_ENABLE_PROJECTS="clang;lld" \
           -DLLVM_TARGETS_TO_BUILD="X86" \
           -DLLVM_ENABLE_LIBXML2=OFF
-        cmake --build "$build_root" --config Release --target install --parallel
+        cmake --build "$build_root" --target install --parallel
 
     - name: Install LLVM (Windows)
       if: runner.os == 'Windows'
