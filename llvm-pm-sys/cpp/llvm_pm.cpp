@@ -445,7 +445,8 @@ extern "C" LlvmPmPassManagerRef llvm_pm_create_thin_lto_pre_link(
 #if LLVM_VERSION_MAJOR >= 12
     *pm->MPM = pm->PB->buildThinLTOPreLinkDefaultPipeline(opt);
 #else
-    *pm->MPM = pm->PB->buildThinLTOPreLinkDefaultPipeline(opt, pm->DebugLogging, /*ImportSummary=*/nullptr);
+    // LLVM 10/11: (OptimizationLevel, bool DebugLogging), no import summary param.
+    *pm->MPM = pm->PB->buildThinLTOPreLinkDefaultPipeline(opt, pm->DebugLogging);
 #endif
 
     *err_msg = nullptr;
