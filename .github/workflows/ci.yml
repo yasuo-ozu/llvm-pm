@@ -9,6 +9,12 @@ on:
 env:
   CARGO_TERM_COLOR: always
 
+# Cancel superseded runs on the same ref so new pushes don't pile up behind the
+# slow Windows/macOS from-source LLVM builds.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   #pre-check:
   #  name: MSRV (Rust 1.71) / LLVM 18 and doc
@@ -105,10 +111,11 @@ jobs:
           LLVM_MAJOR="${LLVM_TAG%%.*}"
           LLVM_MINOR="$(echo "$LLVM_TAG" | cut -d. -f2)"
           BASE_FEATURE="llvm${LLVM_MAJOR}-${LLVM_MINOR}"
-          # `llvm-plugin` integration is only supported for LLVM 10..17 (it pins
-          # inkwell 0.5 / llvm-sys <=180). For LLVM 18+ the crate uses inkwell 0.9
-          # and `llvm-plugin-crate` is a hard compile_error, so never enable it there.
-          if [ "$LLVM_MAJOR" -le 17 -a "$RUNNER_OS" != "Windows" ]; then
+          # `llvm-plugin` links LLVM dynamically (`-l dylib=LLVM`), which requires a
+          # libLLVM.so. apt (LLVM 13..17) ships it; the LLVM <=12 release archive /
+          # source builds do not, so enable `llvm-plugin-crate` only for 13..17.
+          # (LLVM 18+ uses inkwell 0.9, where `llvm-plugin-crate` is a compile_error.)
+          if [ "$LLVM_MAJOR" -ge 13 -a "$LLVM_MAJOR" -le 17 -a "$RUNNER_OS" != "Windows" ]; then
             FEATURES="${BASE_FEATURE},llvm-plugin-crate"
           else
             FEATURES="${BASE_FEATURE}"

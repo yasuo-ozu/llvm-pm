@@ -241,12 +241,13 @@ runs:
         path: C:\LLVM\${{ inputs.version }}
         key: ${{ runner.os }}-llvm-src-libxml2off-${{ inputs.version }}-v1
 
-    # Set up the MSVC toolchain on PATH so cmake's Ninja generator finds cl.exe.
-    # The "Visual Studio 17 2022" generator no longer reliably auto-detects VS on
-    # the current windows-latest image ("could not find any instance of Visual
-    # Studio"); Ninja + a primed MSVC environment is robust.
+    # Activate the MSVC toolchain for the rest of the job. This must run on EVERY
+    # Windows job (not just LLVM-build cache-misses): it puts MSVC's link.exe ahead
+    # of Git's GNU /usr/bin/link.exe on PATH, which rustc's MSVC target needs at the
+    # later Build/Test steps. It also lets cmake's Ninja generator find cl.exe (the
+    # "Visual Studio 17 2022" generator no longer auto-detects VS on windows-latest).
     - name: Set up MSVC (Windows)
-      if: runner.os == 'Windows' && steps.cache-llvm-windows.outputs.cache-hit != 'true'
+      if: runner.os == 'Windows'
       uses: ilammy/msvc-dev-cmd@v1
       with:
         arch: x64
