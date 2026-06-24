@@ -597,11 +597,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // textual parser does not register `loop-rotate` or `simplifycfg`, so keep to
     // `loop-simplify` and `instcombine` here; the example still exercises loop,
     // CGSCC, and analysis passes via the custom `add_*` calls below.
-    let mut function_pm = FunctionPassManager::with_pipeline(
-        None,
-        "loop-simplify,instcombine",
-        None,
-    )?;
+    let mut function_pm =
+        FunctionPassManager::with_pipeline(None, "loop-simplify,instcombine", None)?;
     function_pm.add_pass((FunctionAnalysisOnlyPass).into_pass());
     function_pm.add_pass((FunctionStatsAnalysis).into_pass());
     function_pm.add_pass(FunctionMutatePass {
