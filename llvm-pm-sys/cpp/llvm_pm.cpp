@@ -279,10 +279,10 @@ static void reinitSI(LlvmPmOpaquePassManager *pm, LLVMContext &Ctx) {
     pm->SI = std::make_unique<StandardInstrumentations>(
         pm->DebugLogging, pm->VerifyEach);
 #elif LLVM_VERSION_MAJOR >= 11
-    // LLVM 11's StandardInstrumentations ctor takes only DebugLogging
-    // (VerifyEach was added in LLVM 12).
+    // LLVM 11's StandardInstrumentations has only a default ctor
+    // (DebugLogging/VerifyEach parameters were added in LLVM 12).
     (void)Ctx;
-    pm->SI = std::make_unique<StandardInstrumentations>(pm->DebugLogging);
+    pm->SI = std::make_unique<StandardInstrumentations>();
 #else
     // LLVM 10 has no StandardInstrumentations; PassInstrumentationCallbacks alone
     // is sufficient.
