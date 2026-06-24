@@ -593,12 +593,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
     module_pm.run(&module)?;
 
-    // `loop-rotate` is a loop pass; wrap it in the `loop(...)` adaptor so the
-    // pipeline parses on all LLVM versions (LLVM 10/11's parser rejects a bare
-    // loop pass at function level, unlike 12+).
+    // Use only passes whose new-PM names exist across LLVM 10..22. `loop-rotate`
+    // is not registered in LLVM 10's textual pass parser, so it is omitted here;
+    // the example still exercises loop passes via the custom `add_loop_pass` below.
     let mut function_pm = FunctionPassManager::with_pipeline(
         None,
-        "loop-simplify,loop(loop-rotate),instcombine,simplifycfg",
+        "loop-simplify,instcombine,simplifycfg",
         None,
     )?;
     function_pm.add_pass((FunctionAnalysisOnlyPass).into_pass());
