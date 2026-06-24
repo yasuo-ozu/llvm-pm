@@ -15,7 +15,11 @@ runs:
         VERSION="${{ inputs.version }}"
         MAJOR="${VERSION%%.*}"
         MINOR="$(echo "$VERSION" | cut -d. -f2)"
-        if [ "$MAJOR" -le 18 ]; then
+        # llvm-sys env-var key: LLVM 10..17 use llvm-sys 100..170 (key "<MAJOR>0");
+        # LLVM 18+ use llvm-sys 181/191/201/... (key "<MAJOR><MINOR>"). LLVM 18 must
+        # map to 181 (not 180) — our `llvm18-1` feature depends on llvm-sys 181 and
+        # reads LLVM_SYS_181_PREFIX.
+        if [ "$MAJOR" -le 17 ]; then
           LLVM_SYS_KEY="${MAJOR}0"
         else
           LLVM_SYS_KEY="${MAJOR}${MINOR}"

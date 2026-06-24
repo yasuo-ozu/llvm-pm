@@ -217,6 +217,14 @@ void llvm_pm_dispose(LlvmPmPassManagerRef pm);
 /** Free an error/info message. msg may be NULL (no-op). */
 void llvm_pm_dispose_message(char *msg);
 
+/** Internal CGSCCAnalysisManager pointer; used by Rust to clear its
+ *  per-manager analysis registry/cache on dispose. */
+void *llvm_pm_cgam_ptr(LlvmPmPassManagerRef pm);
+
+/** Internal LoopAnalysisManager pointer; used by Rust to clear its
+ *  per-manager analysis registry/cache on dispose. */
+void *llvm_pm_lam_ptr(LlvmPmPassManagerRef pm);
+
 /* =========================================================================
  * Plugin API — PassBuilder callback registration
  * ========================================================================= */

@@ -105,7 +105,10 @@ jobs:
           LLVM_MAJOR="${LLVM_TAG%%.*}"
           LLVM_MINOR="$(echo "$LLVM_TAG" | cut -d. -f2)"
           BASE_FEATURE="llvm${LLVM_MAJOR}-${LLVM_MINOR}"
-          if [ "$LLVM_MAJOR" -le 20 -a "$RUNNER_OS" != "Windows" ]; then
+          # `llvm-plugin` integration is only supported for LLVM 10..17 (it pins
+          # inkwell 0.5 / llvm-sys <=180). For LLVM 18+ the crate uses inkwell 0.9
+          # and `llvm-plugin-crate` is a hard compile_error, so never enable it there.
+          if [ "$LLVM_MAJOR" -le 17 -a "$RUNNER_OS" != "Windows" ]; then
             FEATURES="${BASE_FEATURE},llvm-plugin-crate"
           else
             FEATURES="${BASE_FEATURE}"
@@ -160,7 +163,9 @@ jobs:
         run: cargo install cargo-tarpaulin
 
       - name: Run coverage
-        run: cargo tarpaulin --workspace --no-default-features --features llvm-plugin-crate,llvm18-1 --out xml --output-dir coverage
+        # LLVM 18 uses inkwell 0.9; `llvm-plugin-crate` is unsupported there
+        # (compile_error), so coverage runs the core feature only.
+        run: cargo tarpaulin --workspace --no-default-features --features llvm18-1 --out xml --output-dir coverage
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v4

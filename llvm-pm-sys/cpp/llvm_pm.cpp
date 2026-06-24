@@ -56,6 +56,10 @@ struct LlvmPmOpaquePassManager {
     bool DebugLogging = false;
     bool VerifyEach = false;
 
+    // Context backing the current SI/PIC. Reuse SI/PIC while it is unchanged to
+    // avoid unbounded RetiredPICs/RetiredSIs growth across repeated run() calls.
+    LLVMContext *SICtx = nullptr;
+
     // Old PIC/SI pairs kept alive so cached PassInstrumentation analysis
     // results (which hold PIC pointers) do not dangle.
     std::vector<std::unique_ptr<PassInstrumentationCallbacks>> RetiredPICs;
@@ -222,12 +226,18 @@ static LlvmPmOpaquePassManager *createInfrastructure(
 /// Old PIC/SI are retired (kept alive) so that any cached
 /// PassInstrumentation analysis results do not dangle.
 static void reinitSI(LlvmPmOpaquePassManager *pm, LLVMContext &Ctx) {
-    // Retire old PIC+SI (keep alive for cached analysis results)
-    if (pm->SI) pm->RetiredSIs.push_back(std::move(pm->SI));
-    if (pm->PIC) pm->RetiredPICs.push_back(std::move(pm->PIC));
-
-    // Create fresh PIC+SI with the current context
-    pm->PIC = std::make_unique<PassInstrumentationCallbacks>();
+    // Reuse existing PIC/SI when the context is unchanged (finding N9).
+    if (pm->SI && pm->SICtx == &Ctx)
+        return;
+    // Retire the previous SI and its paired PIC so cached PassInstrumentation
+    // analysis results that hold the old PIC pointer do not dangle.
+    if (pm->SI) {
+        pm->RetiredSIs.push_back(std::move(pm->SI));
+        pm->RetiredPICs.push_back(std::move(pm->PIC));
+    }
+    pm->SICtx = &Ctx;
+    if (!pm->PIC)
+        pm->PIC = std::make_unique<PassInstrumentationCallbacks>();
 #if LLVM_VERSION_MAJOR >= 16
     pm->SI = std::make_unique<StandardInstrumentations>(
         Ctx, pm->DebugLogging, pm->VerifyEach);
@@ -240,8 +250,6 @@ static void reinitSI(LlvmPmOpaquePassManager *pm, LLVMContext &Ctx) {
     pm->SI = std::make_unique<StandardInstrumentations>();
 #endif
     pm->SI->registerCallbacks(*pm->PIC);
-
-    // Re-register PassInstrumentationAnalysis in all analysis managers
     pm->LAM->registerPass([&] { return PassInstrumentationAnalysis(pm->PIC.get()); });
     pm->FAM->registerPass([&] { return PassInstrumentationAnalysis(pm->PIC.get()); });
     pm->CGAM->registerPass([&] { return PassInstrumentationAnalysis(pm->PIC.get()); });
@@ -596,6 +604,14 @@ extern "C" void llvm_pm_dispose_message(char *msg) {
     std::free(msg);
 }
 
+extern "C" void *llvm_pm_cgam_ptr(LlvmPmPassManagerRef pm) {
+    return pm ? pm->CGAM.get() : nullptr;
+}
+
+extern "C" void *llvm_pm_lam_ptr(LlvmPmPassManagerRef pm) {
+    return pm ? pm->LAM.get() : nullptr;
+}
+
 // ===== Plugin API =====
 
 #ifndef LLVM_PLUGIN_API_VERSION
@@ -732,7 +748,11 @@ extern "C" void llvm_pm_pb_add_optimizer_last_ep_callback(
     auto *PB = reinterpret_cast<PassBuilder *>(pass_builder);
     auto Data = std::shared_ptr<const void>(cb_data, cb_deleter);
     PB->registerOptimizerLastEPCallback(
+#if LLVM_VERSION_MAJOR >= 20
+        [Data, callback](ModulePassManager &MPM, LlvmPmOptimizationLevel Opt, ThinOrFullLTOPhase) {
+#else
         [Data, callback](ModulePassManager &MPM, LlvmPmOptimizationLevel Opt) {
+#endif
             callback(Data.get(), &MPM, reverseMapOptLevel(Opt));
         });
 }
@@ -760,7 +780,11 @@ extern "C" void llvm_pm_pb_add_pipeline_early_simplification_ep_callback(
     auto *PB = reinterpret_cast<PassBuilder *>(pass_builder);
     auto Data = std::shared_ptr<const void>(cb_data, cb_deleter);
     PB->registerPipelineEarlySimplificationEPCallback(
+#if LLVM_VERSION_MAJOR >= 20
+        [Data, callback](ModulePassManager &MPM, LlvmPmOptimizationLevel Opt, ThinOrFullLTOPhase) {
+#else
         [Data, callback](ModulePassManager &MPM, LlvmPmOptimizationLevel Opt) {
+#endif
             callback(Data.get(), &MPM, reverseMapOptLevel(Opt));
         });
 }
@@ -775,7 +799,11 @@ extern "C" void llvm_pm_pb_add_optimizer_early_ep_callback(
     auto *PB = reinterpret_cast<PassBuilder *>(pass_builder);
     auto Data = std::shared_ptr<const void>(cb_data, cb_deleter);
     PB->registerOptimizerEarlyEPCallback(
+#if LLVM_VERSION_MAJOR >= 20
+        [Data, callback](ModulePassManager &MPM, LlvmPmOptimizationLevel Opt, ThinOrFullLTOPhase) {
+#else
         [Data, callback](ModulePassManager &MPM, LlvmPmOptimizationLevel Opt) {
+#endif
             callback(Data.get(), &MPM, reverseMapOptLevel(Opt));
         });
 }
