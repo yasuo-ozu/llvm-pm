@@ -72,6 +72,17 @@ runs:
           tar -xf "$archive" -C "$prefix_u"
         fi
 
+        # Some prebuilt Linux llvm-config binaries are linked against libtinfo.so.5,
+        # but current Ubuntu runners ship only libtinfo.so.6. Provide a compat symlink
+        # so llvm-config (and clang tools) load.
+        if [ "${RUNNER_OS}" = "Linux" ]; then
+          for d in /usr/lib/x86_64-linux-gnu /lib/x86_64-linux-gnu; do
+            if [ ! -e "$d/libtinfo.so.5" ] && [ -e "$d/libtinfo.so.6" ]; then
+              sudo ln -sf "$d/libtinfo.so.6" "$d/libtinfo.so.5" || true
+            fi
+          done
+        fi
+
         # The archives extract bin/ include/ lib/ directly; tolerate a single wrapper
         # directory just in case by locating llvm-config under the prefix.
         cfg="$(find "$prefix_u" -maxdepth 3 -type f \( -name 'llvm-config' -o -name 'llvm-config.exe' \) | head -n1)"
@@ -108,10 +119,15 @@ runs:
         set -euo pipefail
         "${LLVM_CONFIG}" --version
         inc="$("${LLVM_CONFIG}" --includedir)"
-        for h in "llvm-c/Types.h" "llvm-c/TargetMachine.h" "llvm/Passes/PassPlugin.h"; do
+        for h in "llvm-c/Types.h" "llvm-c/TargetMachine.h"; do
           if [ ! -f "${inc}/${h}" ]; then
             echo "Missing required LLVM header: ${inc}/${h}" >&2
             exit 1
           fi
         done
+        # PassPlugin.h lives under llvm/Passes/ (<=21) or llvm/Plugins/ (22+).
+        if [ ! -f "${inc}/llvm/Passes/PassPlugin.h" ] && [ ! -f "${inc}/llvm/Plugins/PassPlugin.h" ]; then
+          echo "Missing PassPlugin.h under ${inc}/llvm/{Passes,Plugins}" >&2
+          exit 1
+        fi
         echo "LLVM headers OK under ${inc}"
