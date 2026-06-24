@@ -177,6 +177,7 @@ static LlvmPmOpaquePassManager *createInfrastructure(
             });
     }
 #endif
+#if LLVM_VERSION_MAJOR >= 11
     for (const auto &p : opts.OptimizerLastEPs) {
         pm->PB->registerOptimizerLastEPCallback(
             [PBPtr, p](ModulePassManager &MPM, auto&&...) {
@@ -184,6 +185,7 @@ static LlvmPmOpaquePassManager *createInfrastructure(
                     consumeError(std::move(Err));
             });
     }
+#endif
     for (const auto &p : opts.VectorizerStartEPs) {
         pm->PB->registerVectorizerStartEPCallback(
             [PBPtr, p](FunctionPassManager &FPM, auto&&...) {
@@ -198,6 +200,7 @@ static LlvmPmOpaquePassManager *createInfrastructure(
                     consumeError(std::move(Err));
             });
     }
+#if LLVM_VERSION_MAJOR >= 12
     for (const auto &p : opts.PipelineStartEPs) {
         pm->PB->registerPipelineStartEPCallback(
             [PBPtr, p](ModulePassManager &MPM, auto&&...) {
@@ -212,6 +215,7 @@ static LlvmPmOpaquePassManager *createInfrastructure(
                     consumeError(std::move(Err));
             });
     }
+#endif
 
     pm->PB->registerModuleAnalyses(*pm->MAM);
     pm->PB->registerCGSCCAnalyses(*pm->CGAM);
@@ -316,7 +320,13 @@ extern "C" LlvmPmPassManagerRef llvm_pm_create_with_opt_level(
 
     pm->MPM = std::make_unique<ModulePassManager>();
     if (opt == LlvmPmOptimizationLevel::O0) {
+#if LLVM_VERSION_MAJOR >= 12
         *pm->MPM = pm->PB->buildO0DefaultPipeline(opt);
+#else
+        // buildO0DefaultPipeline was added in LLVM 12. Pre-12, an O0 pipeline is
+        // simply empty (no optimization passes), so leave MPM as the default-
+        // constructed empty ModulePassManager.
+#endif
     } else {
         *pm->MPM = pm->PB->buildPerModuleDefaultPipeline(opt);
     }
