@@ -122,15 +122,20 @@ jobs:
           fi
           echo "LLVM_FEATURES=${FEATURES}" >> "$GITHUB_ENV"
 
-      - name: Cache cargo home and build
+      # Cache only the downloaded crate registry (small, shared), NOT ~/.cargo/git
+      # or target/. The whole repo shares a 10 GB Actions cache budget; the
+      # expensive artifact to preserve is the from-source LLVM build (Windows /
+      # old LLVM, ~40 min each), so keep cargo's footprint minimal to leave room
+      # for the LLVM caches in install-llvm. Crate deps recompile in minutes.
+      - name: Cache cargo registry
         uses: actions/cache@v4
         with:
           path: |
-            ~/.cargo
-            target
-          key: ${{ runner.os }}-${{ matrix.platform.runs-on }}-cargo-llvm${{ matrix.llvm }}-${{ hashFiles('**/Cargo.lock') }}
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+          key: ${{ runner.os }}-${{ matrix.platform.runs-on }}-cargoreg-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-${{ matrix.platform.runs-on }}-cargo-
+            ${{ runner.os }}-${{ matrix.platform.runs-on }}-cargoreg-
 
       - name: Build
         shell: bash
