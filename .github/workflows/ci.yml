@@ -91,6 +91,22 @@ jobs:
           - "20.1.8"
           - "21.1.4"
           - "22.1.0"
+        exclude:
+          # LLVM 10 (released 2020) is incompatible with the current macOS runner
+          # images: its libclang cannot target arm64 (Apple Silicon → bindgen
+          # pointer-width assertion) and cannot parse the macOS 15 SDK headers
+          # (_Float16 is unsupported). The combination cannot build regardless of
+          # configuration, so macOS + LLVM 10 is omitted on both arches.
+          - platform:
+              label: macOS (macos-latest)
+              runs-on: macos-latest
+              rust-toolchain: stable
+            llvm: "10.0.1"
+          - platform:
+              label: macOS (macos-15-intel)
+              runs-on: macos-15-intel
+              rust-toolchain: stable
+            llvm: "10.0.1"
     steps:
       - uses: actions/checkout@v4
 
