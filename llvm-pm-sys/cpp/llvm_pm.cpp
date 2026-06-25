@@ -6,8 +6,16 @@
 #include <llvm/IR/Module.h>
 #include <llvm/IR/PassInstrumentation.h>
 #include <llvm/Passes/PassBuilder.h>
+#if LLVM_VERSION_MAJOR >= 22
+// LLVM 22 moved PassPlugin.h from llvm/Passes/ to llvm/Plugins/.
+#include <llvm/Plugins/PassPlugin.h>
+#else
 #include <llvm/Passes/PassPlugin.h>
+#endif
+#if LLVM_VERSION_MAJOR >= 11
+// StandardInstrumentations was introduced in LLVM 11.
 #include <llvm/Passes/StandardInstrumentations.h>
+#endif
 #include <llvm/Analysis/CGSCCPassManager.h>
 #include <llvm/Analysis/LoopAnalysisManager.h>
 #include <llvm/Analysis/LazyCallGraph.h>
@@ -43,7 +51,9 @@ struct LlvmPmOpaqueOptions {
 
 struct LlvmPmOpaquePassManager {
     std::unique_ptr<PassInstrumentationCallbacks> PIC;
+#if LLVM_VERSION_MAJOR >= 11
     std::unique_ptr<StandardInstrumentations> SI;
+#endif
     std::unique_ptr<LoopAnalysisManager> LAM;
     std::unique_ptr<FunctionAnalysisManager> FAM;
     std::unique_ptr<CGSCCAnalysisManager> CGAM;
@@ -56,10 +66,16 @@ struct LlvmPmOpaquePassManager {
     bool DebugLogging = false;
     bool VerifyEach = false;
 
+    // Context backing the current SI/PIC. Reuse SI/PIC while it is unchanged to
+    // avoid unbounded RetiredPICs/RetiredSIs growth across repeated run() calls.
+    LLVMContext *SICtx = nullptr;
+
     // Old PIC/SI pairs kept alive so cached PassInstrumentation analysis
     // results (which hold PIC pointers) do not dangle.
     std::vector<std::unique_ptr<PassInstrumentationCallbacks>> RetiredPICs;
+#if LLVM_VERSION_MAJOR >= 11
     std::vector<std::unique_ptr<StandardInstrumentations>> RetiredSIs;
+#endif
 
     ~LlvmPmOpaquePassManager() {
         MPM.reset();
@@ -69,9 +85,13 @@ struct LlvmPmOpaquePassManager {
         CGAM.reset();
         FAM.reset();
         LAM.reset();
+#if LLVM_VERSION_MAJOR >= 11
         SI.reset();
+#endif
         PIC.reset();
+#if LLVM_VERSION_MAJOR >= 11
         RetiredSIs.clear();
+#endif
         RetiredPICs.clear();
     }
 };
@@ -150,9 +170,14 @@ static LlvmPmOpaquePassManager *createInfrastructure(
 #elif LLVM_VERSION_MAJOR >= 13
     pm->PB = std::make_unique<PassBuilder>(
         TM, PipelineTuningOptions(), llvm::None, pm->PIC.get());
-#else
+#elif LLVM_VERSION_MAJOR >= 12
+    // LLVM 12 added a leading `bool DebugLogging` ctor parameter (removed in 13).
     pm->PB = std::make_unique<PassBuilder>(
         pm->DebugLogging, TM, PipelineTuningOptions(), llvm::None);
+#else
+    // LLVM 10/11: ctor is (TM, PTO, PGOOpt, PIC) with no DebugLogging parameter.
+    pm->PB = std::make_unique<PassBuilder>(
+        TM, PipelineTuningOptions(), llvm::None, pm->PIC.get());
 #endif
 
     PassBuilder *PBPtr = pm->PB.get();
@@ -173,6 +198,7 @@ static LlvmPmOpaquePassManager *createInfrastructure(
             });
     }
 #endif
+#if LLVM_VERSION_MAJOR >= 11
     for (const auto &p : opts.OptimizerLastEPs) {
         pm->PB->registerOptimizerLastEPCallback(
             [PBPtr, p](ModulePassManager &MPM, auto&&...) {
@@ -180,6 +206,7 @@ static LlvmPmOpaquePassManager *createInfrastructure(
                     consumeError(std::move(Err));
             });
     }
+#endif
     for (const auto &p : opts.VectorizerStartEPs) {
         pm->PB->registerVectorizerStartEPCallback(
             [PBPtr, p](FunctionPassManager &FPM, auto&&...) {
@@ -194,6 +221,7 @@ static LlvmPmOpaquePassManager *createInfrastructure(
                     consumeError(std::move(Err));
             });
     }
+#if LLVM_VERSION_MAJOR >= 12
     for (const auto &p : opts.PipelineStartEPs) {
         pm->PB->registerPipelineStartEPCallback(
             [PBPtr, p](ModulePassManager &MPM, auto&&...) {
@@ -208,6 +236,7 @@ static LlvmPmOpaquePassManager *createInfrastructure(
                     consumeError(std::move(Err));
             });
     }
+#endif
 
     pm->PB->registerModuleAnalyses(*pm->MAM);
     pm->PB->registerCGSCCAnalyses(*pm->CGAM);
@@ -222,26 +251,46 @@ static LlvmPmOpaquePassManager *createInfrastructure(
 /// Old PIC/SI are retired (kept alive) so that any cached
 /// PassInstrumentation analysis results do not dangle.
 static void reinitSI(LlvmPmOpaquePassManager *pm, LLVMContext &Ctx) {
-    // Retire old PIC+SI (keep alive for cached analysis results)
-    if (pm->SI) pm->RetiredSIs.push_back(std::move(pm->SI));
-    if (pm->PIC) pm->RetiredPICs.push_back(std::move(pm->PIC));
-
-    // Create fresh PIC+SI with the current context
-    pm->PIC = std::make_unique<PassInstrumentationCallbacks>();
+    // Reuse existing PIC/SI when the context is unchanged (finding N9).
+#if LLVM_VERSION_MAJOR >= 11
+    if (pm->SI && pm->SICtx == &Ctx)
+        return;
+    // Retire the previous SI and its paired PIC so cached PassInstrumentation
+    // analysis results that hold the old PIC pointer do not dangle.
+    if (pm->SI) {
+        pm->RetiredSIs.push_back(std::move(pm->SI));
+        pm->RetiredPICs.push_back(std::move(pm->PIC));
+    }
+#else
+    // LLVM 10 has no StandardInstrumentations; track context reuse via PIC alone.
+    if (pm->PIC && pm->SICtx == &Ctx)
+        return;
+    if (pm->PIC)
+        pm->RetiredPICs.push_back(std::move(pm->PIC));
+#endif
+    pm->SICtx = &Ctx;
+    if (!pm->PIC)
+        pm->PIC = std::make_unique<PassInstrumentationCallbacks>();
 #if LLVM_VERSION_MAJOR >= 16
     pm->SI = std::make_unique<StandardInstrumentations>(
         Ctx, pm->DebugLogging, pm->VerifyEach);
-#elif LLVM_VERSION_MAJOR >= 11
+#elif LLVM_VERSION_MAJOR >= 12
     (void)Ctx;
     pm->SI = std::make_unique<StandardInstrumentations>(
         pm->DebugLogging, pm->VerifyEach);
-#else
+#elif LLVM_VERSION_MAJOR >= 11
+    // LLVM 11's StandardInstrumentations has only a default ctor
+    // (DebugLogging/VerifyEach parameters were added in LLVM 12).
     (void)Ctx;
     pm->SI = std::make_unique<StandardInstrumentations>();
+#else
+    // LLVM 10 has no StandardInstrumentations; PassInstrumentationCallbacks alone
+    // is sufficient.
+    (void)Ctx;
 #endif
+#if LLVM_VERSION_MAJOR >= 11
     pm->SI->registerCallbacks(*pm->PIC);
-
-    // Re-register PassInstrumentationAnalysis in all analysis managers
+#endif
     pm->LAM->registerPass([&] { return PassInstrumentationAnalysis(pm->PIC.get()); });
     pm->FAM->registerPass([&] { return PassInstrumentationAnalysis(pm->PIC.get()); });
     pm->CGAM->registerPass([&] { return PassInstrumentationAnalysis(pm->PIC.get()); });
@@ -308,7 +357,13 @@ extern "C" LlvmPmPassManagerRef llvm_pm_create_with_opt_level(
 
     pm->MPM = std::make_unique<ModulePassManager>();
     if (opt == LlvmPmOptimizationLevel::O0) {
+#if LLVM_VERSION_MAJOR >= 12
         *pm->MPM = pm->PB->buildO0DefaultPipeline(opt);
+#else
+        // buildO0DefaultPipeline was added in LLVM 12. Pre-12, an O0 pipeline is
+        // simply empty (no optimization passes), so leave MPM as the default-
+        // constructed empty ModulePassManager.
+#endif
     } else {
         *pm->MPM = pm->PB->buildPerModuleDefaultPipeline(opt);
     }
@@ -346,7 +401,12 @@ extern "C" LlvmPmPassManagerRef llvm_pm_create_lto(
     LlvmPmOptimizationLevel opt = mapOptLevel(level);
 
     pm->MPM = std::make_unique<ModulePassManager>();
+#if LLVM_VERSION_MAJOR >= 12
     *pm->MPM = pm->PB->buildLTODefaultPipeline(opt, /*ExportSummary=*/nullptr);
+#else
+    // LLVM 10/11 take a leading bool DebugLogging argument.
+    *pm->MPM = pm->PB->buildLTODefaultPipeline(opt, pm->DebugLogging, /*ExportSummary=*/nullptr);
+#endif
 
     *err_msg = nullptr;
     return pm;
@@ -362,7 +422,11 @@ extern "C" LlvmPmPassManagerRef llvm_pm_create_lto_pre_link(
     LlvmPmOptimizationLevel opt = mapOptLevel(level);
 
     pm->MPM = std::make_unique<ModulePassManager>();
+#if LLVM_VERSION_MAJOR >= 12
     *pm->MPM = pm->PB->buildLTOPreLinkDefaultPipeline(opt);
+#else
+    *pm->MPM = pm->PB->buildLTOPreLinkDefaultPipeline(opt, pm->DebugLogging);
+#endif
 
     *err_msg = nullptr;
     return pm;
@@ -378,7 +442,12 @@ extern "C" LlvmPmPassManagerRef llvm_pm_create_thin_lto_pre_link(
     LlvmPmOptimizationLevel opt = mapOptLevel(level);
 
     pm->MPM = std::make_unique<ModulePassManager>();
+#if LLVM_VERSION_MAJOR >= 12
     *pm->MPM = pm->PB->buildThinLTOPreLinkDefaultPipeline(opt);
+#else
+    // LLVM 10/11: (OptimizationLevel, bool DebugLogging), no import summary param.
+    *pm->MPM = pm->PB->buildThinLTOPreLinkDefaultPipeline(opt, pm->DebugLogging);
+#endif
 
     *err_msg = nullptr;
     return pm;
@@ -596,6 +665,14 @@ extern "C" void llvm_pm_dispose_message(char *msg) {
     std::free(msg);
 }
 
+extern "C" void *llvm_pm_cgam_ptr(LlvmPmPassManagerRef pm) {
+    return pm ? pm->CGAM.get() : nullptr;
+}
+
+extern "C" void *llvm_pm_lam_ptr(LlvmPmPassManagerRef pm) {
+    return pm ? pm->LAM.get() : nullptr;
+}
+
 // ===== Plugin API =====
 
 #ifndef LLVM_PLUGIN_API_VERSION
@@ -732,7 +809,11 @@ extern "C" void llvm_pm_pb_add_optimizer_last_ep_callback(
     auto *PB = reinterpret_cast<PassBuilder *>(pass_builder);
     auto Data = std::shared_ptr<const void>(cb_data, cb_deleter);
     PB->registerOptimizerLastEPCallback(
+#if LLVM_VERSION_MAJOR >= 20
+        [Data, callback](ModulePassManager &MPM, LlvmPmOptimizationLevel Opt, ThinOrFullLTOPhase) {
+#else
         [Data, callback](ModulePassManager &MPM, LlvmPmOptimizationLevel Opt) {
+#endif
             callback(Data.get(), &MPM, reverseMapOptLevel(Opt));
         });
 }
@@ -760,7 +841,11 @@ extern "C" void llvm_pm_pb_add_pipeline_early_simplification_ep_callback(
     auto *PB = reinterpret_cast<PassBuilder *>(pass_builder);
     auto Data = std::shared_ptr<const void>(cb_data, cb_deleter);
     PB->registerPipelineEarlySimplificationEPCallback(
+#if LLVM_VERSION_MAJOR >= 20
+        [Data, callback](ModulePassManager &MPM, LlvmPmOptimizationLevel Opt, ThinOrFullLTOPhase) {
+#else
         [Data, callback](ModulePassManager &MPM, LlvmPmOptimizationLevel Opt) {
+#endif
             callback(Data.get(), &MPM, reverseMapOptLevel(Opt));
         });
 }
@@ -775,7 +860,11 @@ extern "C" void llvm_pm_pb_add_optimizer_early_ep_callback(
     auto *PB = reinterpret_cast<PassBuilder *>(pass_builder);
     auto Data = std::shared_ptr<const void>(cb_data, cb_deleter);
     PB->registerOptimizerEarlyEPCallback(
+#if LLVM_VERSION_MAJOR >= 20
+        [Data, callback](ModulePassManager &MPM, LlvmPmOptimizationLevel Opt, ThinOrFullLTOPhase) {
+#else
         [Data, callback](ModulePassManager &MPM, LlvmPmOptimizationLevel Opt) {
+#endif
             callback(Data.get(), &MPM, reverseMapOptLevel(Opt));
         });
 }

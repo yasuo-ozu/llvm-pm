@@ -106,12 +106,15 @@ impl PassBuilder {
         {
             // SAFETY: cb is a valid pointer kept alive by shared_ptr in C++.
             let cb = unsafe { &*(cb as *const T) };
-            // SAFETY: LLVM provides valid UTF-8 pass names via StringRef.
-            let name = unsafe {
-                std::str::from_utf8_unchecked(std::slice::from_raw_parts(
-                    name_ptr as *const u8,
-                    name_len,
-                ))
+            let name_bytes: &[u8] = if name_ptr.is_null() || name_len == 0 {
+                &[]
+            } else {
+                // SAFETY: LLVM provides a valid (ptr,len) for a non-empty StringRef.
+                unsafe { std::slice::from_raw_parts(name_ptr as *const u8, name_len) }
+            };
+            let name = match std::str::from_utf8(name_bytes) {
+                Ok(s) => s,
+                Err(_) => return 0, // not parsed
             };
             let mut manager = PluginModulePassManager { inner: manager };
             let result = cb(name, &mut manager);
@@ -151,11 +154,15 @@ impl PassBuilder {
             T: Fn(&str, &mut PluginFunctionPassManager) -> PipelineParsing + 'static,
         {
             let cb = unsafe { &*(cb as *const T) };
-            let name = unsafe {
-                std::str::from_utf8_unchecked(std::slice::from_raw_parts(
-                    name_ptr as *const u8,
-                    name_len,
-                ))
+            let name_bytes: &[u8] = if name_ptr.is_null() || name_len == 0 {
+                &[]
+            } else {
+                // SAFETY: LLVM provides a valid (ptr,len) for a non-empty StringRef.
+                unsafe { std::slice::from_raw_parts(name_ptr as *const u8, name_len) }
+            };
+            let name = match std::str::from_utf8(name_bytes) {
+                Ok(s) => s,
+                Err(_) => return 0, // not parsed
             };
             let mut manager = PluginFunctionPassManager { inner: manager };
             let result = cb(name, &mut manager);

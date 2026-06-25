@@ -1411,7 +1411,9 @@ fn test_function_pm_debug() {
 #[test]
 fn test_plugin_api_version() {
     let version = llvm_pm::plugin::plugin_api_version();
-    assert_eq!(version, 1, "LLVM plugin API version should be 1");
+    // LLVM_PLUGIN_API_VERSION is 1 through LLVM 21 and was bumped to 2 in LLVM 22,
+    // so assert it is a valid (non-zero) version rather than a fixed number.
+    assert!(version >= 1, "LLVM plugin API version should be >= 1");
 }
 
 #[test]
@@ -1666,7 +1668,7 @@ fn test_pass_plugin_library_info_construction() {
         plugin_version: b"0.1.0\0".as_ptr(),
         plugin_registrar: dummy_registrar,
     };
-    assert_eq!(info.api_version, 1);
+    assert_eq!(info.api_version, llvm_pm::plugin::plugin_api_version());
     let name = unsafe { std::ffi::CStr::from_ptr(info.plugin_name as *const std::ffi::c_char) };
     assert_eq!(name.to_str().unwrap(), "my-plugin");
     let version =

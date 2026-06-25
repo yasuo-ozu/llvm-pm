@@ -593,11 +593,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
     module_pm.run(&module)?;
 
-    let mut function_pm = FunctionPassManager::with_pipeline(
-        None,
-        "loop-simplify,loop-rotate,instcombine,simplifycfg",
-        None,
-    )?;
+    // Use only passes whose new-PM names are stable across LLVM 10..22. LLVM 10's
+    // textual parser does not register `loop-rotate` or `simplifycfg`, so keep to
+    // `loop-simplify` and `instcombine` here; the example still exercises loop,
+    // CGSCC, and analysis passes via the custom `add_*` calls below.
+    let mut function_pm =
+        FunctionPassManager::with_pipeline(None, "loop-simplify,instcombine", None)?;
     function_pm.add_pass((FunctionAnalysisOnlyPass).into_pass());
     function_pm.add_pass((FunctionStatsAnalysis).into_pass());
     function_pm.add_pass(FunctionMutatePass {

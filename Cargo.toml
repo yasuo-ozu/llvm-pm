@@ -77,5 +77,11 @@ llvm22-1 = ["llvm-pm-sys/llvm22-1", "inkwell_09", "inkwell_09/llvm22-1"]
 llvm-pm-sys = { path = "./llvm-pm-sys", default-features = false, version = "0.2.1" }
 llvm-pm-macros = { path = "./llvm-pm-macros", version = "0.2.1", optional = true }
 llvm-plugin = { version = "0.6", default-features = false, optional = true }
-inkwell_05 = { package = "inkwell", version = ">=0.5, <0.9", default-features = false, optional = true }
+# Pinned to 0.5 so it unifies with the inkwell that `llvm-plugin` (0.6) depends on.
+# A wider range (e.g. ">=0.5, <0.9") lets the resolver pick a newer inkwell for our
+# edge while `llvm-plugin` stays on 0.5, producing two incompatible `inkwell` crates
+# and a type mismatch in `src/llvm_plugin_harness.rs` (the bridge requires
+# `inkwell == llvm_plugin::inkwell`). Cargo.lock is gitignored, so CI resolves fresh
+# every run — the version bound here is what keeps the plugin path consistent.
+inkwell_05 = { package = "inkwell", version = "0.5", default-features = false, optional = true }
 inkwell_09 = { package = "inkwell", version = ">=0.9, <0.11", default-features = false, optional = true }

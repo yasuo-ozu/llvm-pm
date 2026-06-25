@@ -86,6 +86,7 @@ pub use llvm_pm_macros::plugin;
 mod llvm_plugin_harness;
 
 use inkwell::values::AsValueRef;
+use std::any::TypeId;
 use std::collections::HashMap;
 use std::ffi::{c_void, CStr, CString};
 use std::fmt;
@@ -113,7 +114,7 @@ type AnalysisKey = *const u8;
     )
 ))]
 compile_error!(
-    "`llvm-plugin-crate` supports llvm-plugin-compatible LLVM features (llvm10-0 .. llvm7-0)."
+    "`llvm-plugin-crate` supports llvm-plugin-compatible LLVM features (llvm10-0 .. llvm17-0)."
 );
 
 pub struct ModuleAnalysisManager {
@@ -211,6 +212,11 @@ impl std::error::Error for Error {}
 /// `ptr` must be a non-null pointer to a C string allocated by the C++ stubs
 /// (via `malloc`/`copyString`). Ownership is transferred to this function.
 unsafe fn consume_c_error(ptr: *mut std::ffi::c_char) -> Error {
+    if ptr.is_null() {
+        return Error {
+            message: "unknown error (null message; allocation may have failed)".to_string(),
+        };
+    }
     // SAFETY: Caller guarantees ptr is a valid, non-null, malloc'd C string.
     let msg = CStr::from_ptr(ptr).to_string_lossy().into_owned();
     llvm_pm_sys::llvm_pm_dispose_message(ptr);
@@ -345,7 +351,7 @@ impl Drop for Options {
 /// Analysis manager handle for CGSCC passes and analyses.
 pub struct CgsccAnalysisManager {
     raw: *mut c_void,
-    from_analysis_id: Option<AnalysisKey>,
+    from_analysis_id: Option<TypeId>,
 }
 
 impl CgsccAnalysisManager {
@@ -362,7 +368,7 @@ impl CgsccAnalysisManager {
 
     unsafe fn from_raw_with_analysis_id(
         raw: *mut c_void,
-        from_analysis_id: Option<AnalysisKey>,
+        from_analysis_id: Option<TypeId>,
     ) -> Self {
         Self {
             raw,
@@ -378,9 +384,8 @@ impl CgsccAnalysisManager {
     /// Register a CGSCC analysis pass.
     pub fn add_analysis<P>(&self, pass: P)
     where
-        P: LlvmCgsccAnalysis,
-        P: 'static,
-        <P as LlvmCgsccAnalysis>::Result: 'static,
+        P: LlvmCgsccAnalysis + Send + 'static,
+        <P as LlvmCgsccAnalysis>::Result: Send + 'static,
     {
         extern "C" fn pass_deleter<T: LlvmCgsccAnalysis>(pass: *mut c_void) {
             // SAFETY: Pointer was created by Box::into_raw in add_pass.
@@ -393,20 +398,21 @@ impl CgsccAnalysisManager {
             manager: *mut c_void,
         ) -> *mut c_void
         where
-            T: LlvmCgsccAnalysis,
+            T: LlvmCgsccAnalysis + 'static,
             T::Result: 'static,
         {
             // SAFETY: pass is a valid pointer to T stored in registry.
             let pass = unsafe { &*(pass as *const T) };
             // SAFETY: manager is valid for callback duration.
-            let manager =
-                unsafe { CgsccAnalysisManager::from_raw_with_analysis_id(manager, Some(T::id())) };
+            let manager = unsafe {
+                CgsccAnalysisManager::from_raw_with_analysis_id(manager, Some(TypeId::of::<T>()))
+            };
             let result = pass.run_analysis(function, &manager);
             Box::into_raw(Box::new(result)) as *mut c_void
         }
 
         let manager_key = self.raw as usize;
-        let analysis_key = <P as LlvmCgsccAnalysis>::id() as usize;
+        let analysis_key = TypeId::of::<P>();
         let mut passes = cgscc_analysis_passes()
             .lock()
             .expect("poisoned cgscc analysis registry");
@@ -429,40 +435,49 @@ impl CgsccAnalysisManager {
     pub fn get_result<A>(&self, function: &inkwell::values::FunctionValue<'_>) -> &A::Result
     where
         A: LlvmCgsccAnalysis + 'static,
-        A::Result: 'static,
+        A::Result: Send + 'static,
     {
-        let id = A::id();
+        let analysis_key = TypeId::of::<A>();
         assert!(
-            !matches!(self.from_analysis_id, Some(n) if n == id),
+            !matches!(self.from_analysis_id, Some(t) if t == TypeId::of::<A>()),
             "Analysis cannot request its own result"
         );
 
         let manager_key = self.raw as usize;
-        let analysis_key = id as usize;
         let function_key = function.as_value_ref() as usize;
 
         if let Some(result) = self.get_cached_result::<A>(function) {
             return result;
         }
 
-        let passes = cgscc_analysis_passes()
-            .lock()
-            .expect("poisoned cgscc analysis registry");
-        let entry = passes
-            .get(&manager_key)
-            .and_then(|m| m.get(&analysis_key))
-            .expect("analysis was not registered");
-        let result_ptr = (entry.pass_entrypoint)(entry.pass, function, self.raw);
-        drop(passes);
+        // Copy the registered pass pointer and entrypoint fn out of the registry
+        // and release the lock BEFORE running the entrypoint, so that a dependent
+        // analysis requesting another result cannot deadlock and a panic in the
+        // callback cannot poison the registry mutex (finding N2).
+        let entry = {
+            let passes = cgscc_analysis_passes()
+                .lock()
+                .expect("poisoned cgscc analysis registry");
+            passes
+                .get(&manager_key)
+                .and_then(|m| m.get(&analysis_key))
+                .map(|e| (e.pass, e.pass_entrypoint))
+        };
+        let (pass_ptr, entrypoint) = entry.expect("analysis was not registered");
+        let result_ptr = entrypoint(pass_ptr, function, self.raw);
 
         let mut cache = cgscc_analysis_cache()
             .lock()
             .expect("poisoned cgscc analysis cache");
-        cache
-            .entry(manager_key)
-            .or_default()
-            .insert((analysis_key, function_key), result_ptr as usize);
-        // SAFETY: result_ptr points to a leaked Box<A::Result> stored in cache.
+        cache.entry(manager_key).or_default().insert(
+            (analysis_key, function_key),
+            CachedResult {
+                ptr: result_ptr,
+                drop_fn: drop_boxed::<A::Result>,
+            },
+        );
+        // SAFETY: result_ptr points to a Box<A::Result> owned by the CachedResult
+        // just inserted into the cache; it lives until the manager state is cleared.
         unsafe { &*(result_ptr as *const A::Result) }
     }
 
@@ -473,16 +488,15 @@ impl CgsccAnalysisManager {
     ) -> Option<&A::Result>
     where
         A: LlvmCgsccAnalysis + 'static,
-        A::Result: 'static,
+        A::Result: Send + 'static,
     {
-        let id = A::id();
+        let analysis_key = TypeId::of::<A>();
         assert!(
-            !matches!(self.from_analysis_id, Some(n) if n == id),
+            !matches!(self.from_analysis_id, Some(t) if t == TypeId::of::<A>()),
             "Analysis cannot request its own result"
         );
 
         let manager_key = self.raw as usize;
-        let analysis_key = id as usize;
         let function_key = function.as_value_ref() as usize;
         let cache = cgscc_analysis_cache()
             .lock()
@@ -490,16 +504,16 @@ impl CgsccAnalysisManager {
         cache
             .get(&manager_key)
             .and_then(|m| m.get(&(analysis_key, function_key)))
-            // SAFETY: cached pointer values are inserted only from `Box<A::Result>` in
-            // `get_result`, keyed by the same analysis type `A`.
-            .map(|ptr| unsafe { &*((*ptr as *const c_void) as *const A::Result) })
+            // SAFETY: the cached entry holds a `Box<A::Result>` inserted only from
+            // `get_result`, keyed by the same analysis `TypeId`.
+            .map(|entry| unsafe { &*(entry.ptr as *const A::Result) })
     }
 }
 
 /// Analysis manager handle for loop passes and analyses.
 pub struct LoopAnalysisManager {
     raw: *mut c_void,
-    from_analysis_id: Option<AnalysisKey>,
+    from_analysis_id: Option<TypeId>,
 }
 
 impl LoopAnalysisManager {
@@ -516,7 +530,7 @@ impl LoopAnalysisManager {
 
     unsafe fn from_raw_with_analysis_id(
         raw: *mut c_void,
-        from_analysis_id: Option<AnalysisKey>,
+        from_analysis_id: Option<TypeId>,
     ) -> Self {
         Self {
             raw,
@@ -532,9 +546,8 @@ impl LoopAnalysisManager {
     /// Register a loop analysis pass.
     pub fn add_analysis<P>(&self, pass: P)
     where
-        P: LlvmLoopAnalysis,
-        P: 'static,
-        <P as LlvmLoopAnalysis>::Result: 'static,
+        P: LlvmLoopAnalysis + Send + 'static,
+        <P as LlvmLoopAnalysis>::Result: Send + 'static,
     {
         extern "C" fn pass_deleter<T: LlvmLoopAnalysis>(pass: *mut c_void) {
             // SAFETY: Pointer was created by Box::into_raw in add_pass.
@@ -547,20 +560,21 @@ impl LoopAnalysisManager {
             manager: *mut c_void,
         ) -> *mut c_void
         where
-            T: LlvmLoopAnalysis,
+            T: LlvmLoopAnalysis + 'static,
             T::Result: 'static,
         {
             // SAFETY: pass is a valid pointer to T stored in registry.
             let pass = unsafe { &*(pass as *const T) };
             // SAFETY: manager is valid for callback duration.
-            let manager =
-                unsafe { LoopAnalysisManager::from_raw_with_analysis_id(manager, Some(T::id())) };
+            let manager = unsafe {
+                LoopAnalysisManager::from_raw_with_analysis_id(manager, Some(TypeId::of::<T>()))
+            };
             let result = pass.run_analysis(loop_header, &manager);
             Box::into_raw(Box::new(result)) as *mut c_void
         }
 
         let manager_key = self.raw as usize;
-        let analysis_key = <P as LlvmLoopAnalysis>::id() as usize;
+        let analysis_key = TypeId::of::<P>();
         let mut passes = loop_analysis_passes()
             .lock()
             .expect("poisoned loop analysis registry");
@@ -583,40 +597,49 @@ impl LoopAnalysisManager {
     pub fn get_result<A>(&self, loop_header: LLVMBasicBlockRef) -> &A::Result
     where
         A: LlvmLoopAnalysis + 'static,
-        A::Result: 'static,
+        A::Result: Send + 'static,
     {
-        let id = A::id();
+        let analysis_key = TypeId::of::<A>();
         assert!(
-            !matches!(self.from_analysis_id, Some(n) if n == id),
+            !matches!(self.from_analysis_id, Some(t) if t == TypeId::of::<A>()),
             "Analysis cannot request its own result"
         );
 
         let manager_key = self.raw as usize;
-        let analysis_key = id as usize;
         let loop_key = loop_header as usize;
 
         if let Some(result) = self.get_cached_result::<A>(loop_header) {
             return result;
         }
 
-        let passes = loop_analysis_passes()
-            .lock()
-            .expect("poisoned loop analysis registry");
-        let entry = passes
-            .get(&manager_key)
-            .and_then(|m| m.get(&analysis_key))
-            .expect("analysis was not registered");
-        let result_ptr = (entry.pass_entrypoint)(entry.pass, loop_header, self.raw);
-        drop(passes);
+        // Copy the registered pass pointer and entrypoint fn out of the registry
+        // and release the lock BEFORE running the entrypoint, so that a dependent
+        // analysis requesting another result cannot deadlock and a panic in the
+        // callback cannot poison the registry mutex (finding N2).
+        let entry = {
+            let passes = loop_analysis_passes()
+                .lock()
+                .expect("poisoned loop analysis registry");
+            passes
+                .get(&manager_key)
+                .and_then(|m| m.get(&analysis_key))
+                .map(|e| (e.pass, e.pass_entrypoint))
+        };
+        let (pass_ptr, entrypoint) = entry.expect("analysis was not registered");
+        let result_ptr = entrypoint(pass_ptr, loop_header, self.raw);
 
         let mut cache = loop_analysis_cache()
             .lock()
             .expect("poisoned loop analysis cache");
-        cache
-            .entry(manager_key)
-            .or_default()
-            .insert((analysis_key, loop_key), result_ptr as usize);
-        // SAFETY: result_ptr points to a leaked Box<A::Result> stored in cache.
+        cache.entry(manager_key).or_default().insert(
+            (analysis_key, loop_key),
+            CachedResult {
+                ptr: result_ptr,
+                drop_fn: drop_boxed::<A::Result>,
+            },
+        );
+        // SAFETY: result_ptr points to a Box<A::Result> owned by the CachedResult
+        // just inserted into the cache; it lives until the manager state is cleared.
         unsafe { &*(result_ptr as *const A::Result) }
     }
 
@@ -624,16 +647,15 @@ impl LoopAnalysisManager {
     pub fn get_cached_result<A>(&self, loop_header: LLVMBasicBlockRef) -> Option<&A::Result>
     where
         A: LlvmLoopAnalysis + 'static,
-        A::Result: 'static,
+        A::Result: Send + 'static,
     {
-        let id = A::id();
+        let analysis_key = TypeId::of::<A>();
         assert!(
-            !matches!(self.from_analysis_id, Some(n) if n == id),
+            !matches!(self.from_analysis_id, Some(t) if t == TypeId::of::<A>()),
             "Analysis cannot request its own result"
         );
 
         let manager_key = self.raw as usize;
-        let analysis_key = id as usize;
         let loop_key = loop_header as usize;
         let cache = loop_analysis_cache()
             .lock()
@@ -641,9 +663,9 @@ impl LoopAnalysisManager {
         cache
             .get(&manager_key)
             .and_then(|m| m.get(&(analysis_key, loop_key)))
-            // SAFETY: cached pointer values are inserted only from `Box<A::Result>` in
-            // `get_result`, keyed by the same analysis type `A`.
-            .map(|ptr| unsafe { &*((*ptr as *const c_void) as *const A::Result) })
+            // SAFETY: the cached entry holds a `Box<A::Result>` inserted only from
+            // `get_result`, keyed by the same analysis `TypeId`.
+            .map(|entry| unsafe { &*(entry.ptr as *const A::Result) })
     }
 }
 
@@ -679,8 +701,25 @@ impl Drop for LoopAnalysisEntry {
 unsafe impl Send for CgsccAnalysisEntry {}
 unsafe impl Send for LoopAnalysisEntry {}
 
-type AnalysisPassMap<T> = HashMap<usize, HashMap<usize, T>>;
-type AnalysisCacheMap = HashMap<usize, HashMap<(usize, usize), usize>>;
+struct CachedResult {
+    ptr: *mut c_void,
+    drop_fn: unsafe fn(*mut c_void),
+}
+impl Drop for CachedResult {
+    fn drop(&mut self) {
+        // SAFETY: ptr came from Box::into_raw of the matching type in get_result.
+        unsafe { (self.drop_fn)(self.ptr) }
+    }
+}
+// SAFETY: owns a heap Box behind a raw pointer; only accessed under the global Mutex.
+unsafe impl Send for CachedResult {}
+
+unsafe fn drop_boxed<T>(p: *mut c_void) {
+    drop(unsafe { Box::from_raw(p as *mut T) });
+}
+
+type AnalysisPassMap<T> = HashMap<usize, HashMap<TypeId, T>>;
+type AnalysisCacheMap = HashMap<usize, HashMap<(TypeId, usize), CachedResult>>;
 
 fn cgscc_analysis_passes() -> &'static Mutex<AnalysisPassMap<CgsccAnalysisEntry>> {
     static INIT: Once = Once::new();
@@ -738,6 +777,28 @@ fn loop_analysis_cache() -> &'static Mutex<AnalysisCacheMap> {
     unsafe { CELL.as_ref().expect("loop cache initialized") }
 }
 
+/// Clear the per-manager analysis registry and result cache for the CGSCC and
+/// Loop analysis managers identified by their C++ pointers (used as map keys).
+///
+/// Removing each manager_key drops the inner `HashMap`s, which drops every
+/// `{Cgscc,Loop}AnalysisEntry` (freeing the registered pass `Box`) and every
+/// `CachedResult` (freeing the result `Box`). Called on PassManager dispose to
+/// avoid leaks and stale-result hazards (finding #4).
+fn clear_analysis_state(cgam_key: usize, lam_key: usize) {
+    if let Ok(mut m) = cgscc_analysis_passes().lock() {
+        m.remove(&cgam_key);
+    }
+    if let Ok(mut m) = cgscc_analysis_cache().lock() {
+        m.remove(&cgam_key);
+    }
+    if let Ok(mut m) = loop_analysis_passes().lock() {
+        m.remove(&lam_key);
+    }
+    if let Ok(mut m) = loop_analysis_cache().lock() {
+        m.remove(&lam_key);
+    }
+}
+
 fn preserved_to_c(pa: traits::PreservedAnalyses) -> std::ffi::c_int {
     match pa {
         PreservedAnalyses::All => 0,
@@ -761,16 +822,22 @@ pub(crate) unsafe extern "C" fn module_pass_trampoline<T: LlvmModulePass>(
     manager: *mut c_void,
     user_data: *mut c_void,
 ) -> std::ffi::c_int {
-    // SAFETY: user_data was cast from &T stored in a Box inside _passes.
-    let pass = &*(user_data as *const T);
-    // SAFETY: Module::new wraps the LLVMModuleRef without taking ownership.
-    // We must call forget() to avoid dropping (and freeing) the LLVM module,
-    // which is owned by the caller (C++ PassManager).
-    let mut module = inkwell::module::Module::new(module);
-    let manager = ModuleAnalysisManager::from_raw(manager, None);
-    let result = pass.run_pass(&mut module, &manager);
-    std::mem::forget(module);
-    preserved_to_c(result)
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        // SAFETY: user_data was cast from &T stored in a Box inside _passes.
+        let pass = &*(user_data as *const T);
+        // SAFETY: Module::new wraps the C++-owned LLVMModuleRef. ManuallyDrop
+        // ensures we never free it, even if run_pass panics.
+        let mut module = std::mem::ManuallyDrop::new(inkwell::module::Module::new(module));
+        let manager = ModuleAnalysisManager::from_raw(manager, None);
+        pass.run_pass(&mut module, &manager)
+    }));
+    match result {
+        Ok(pa) => preserved_to_c(pa),
+        Err(_) => {
+            eprintln!("llvm-pm: module pass panicked; treating as PreservedAnalyses::None");
+            preserved_to_c(PreservedAnalyses::None)
+        }
+    }
 }
 
 /// Generic trampoline for function passes. Monomorphized per `T`.
@@ -789,14 +856,22 @@ pub(crate) unsafe extern "C" fn function_pass_trampoline<T: LlvmFunctionPass>(
     manager: *mut c_void,
     user_data: *mut c_void,
 ) -> std::ffi::c_int {
-    // SAFETY: user_data was cast from &T stored in a Box inside _passes.
-    let pass = &*(user_data as *const T);
-    // SAFETY: FunctionValue::new wraps the LLVMValueRef without ownership.
-    // FunctionValue has no Drop impl, so no forget() needed.
-    let mut function = inkwell::values::FunctionValue::new(function).expect("invalid function");
-    let manager = FunctionAnalysisManager::from_raw(manager, None);
-    let result = pass.run_pass(&mut function, &manager);
-    preserved_to_c(result)
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        // SAFETY: user_data was cast from &T stored in a Box inside _passes.
+        let pass = &*(user_data as *const T);
+        // SAFETY: FunctionValue::new wraps the LLVMValueRef without ownership.
+        // FunctionValue has no Drop impl, so no ManuallyDrop is needed.
+        let mut function = inkwell::values::FunctionValue::new(function).expect("invalid function");
+        let manager = FunctionAnalysisManager::from_raw(manager, None);
+        pass.run_pass(&mut function, &manager)
+    }));
+    match result {
+        Ok(pa) => preserved_to_c(pa),
+        Err(_) => {
+            eprintln!("llvm-pm: function pass panicked; treating as PreservedAnalyses::None");
+            preserved_to_c(PreservedAnalyses::None)
+        }
+    }
 }
 
 /// Generic trampoline for CGSCC passes. Monomorphized per `T`.
@@ -815,13 +890,21 @@ pub(crate) unsafe extern "C" fn cgscc_pass_trampoline<T: LlvmCgsccPass>(
     manager: *mut c_void,
     user_data: *mut c_void,
 ) -> std::ffi::c_int {
-    // SAFETY: user_data was cast from &T stored in a Box inside _passes.
-    let pass = &*(user_data as *const T);
-    let mut function = inkwell::values::FunctionValue::new(function).expect("invalid function");
-    // SAFETY: manager is valid for callback duration (owned by C++ PM infrastructure).
-    let manager = CgsccAnalysisManager::from_raw(manager);
-    let result = pass.run_pass(&mut function, &manager);
-    preserved_to_c(result)
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        // SAFETY: user_data was cast from &T stored in a Box inside _passes.
+        let pass = &*(user_data as *const T);
+        let mut function = inkwell::values::FunctionValue::new(function).expect("invalid function");
+        // SAFETY: manager is valid for callback duration (owned by C++ PM infrastructure).
+        let manager = CgsccAnalysisManager::from_raw(manager);
+        pass.run_pass(&mut function, &manager)
+    }));
+    match result {
+        Ok(pa) => preserved_to_c(pa),
+        Err(_) => {
+            eprintln!("llvm-pm: cgscc pass panicked; treating as PreservedAnalyses::None");
+            preserved_to_c(PreservedAnalyses::None)
+        }
+    }
 }
 
 /// Generic trampoline for loop passes. Monomorphized per `T`.
@@ -840,12 +923,20 @@ pub(crate) unsafe extern "C" fn loop_pass_trampoline<T: LlvmLoopPass>(
     manager: *mut c_void,
     user_data: *mut c_void,
 ) -> std::ffi::c_int {
-    // SAFETY: user_data was cast from &T stored in a Box inside _passes.
-    let pass = &*(user_data as *const T);
-    // SAFETY: manager is valid for callback duration (owned by C++ PM infrastructure).
-    let manager = LoopAnalysisManager::from_raw(manager);
-    let result = pass.run_pass(header, &manager);
-    preserved_to_c(result)
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        // SAFETY: user_data was cast from &T stored in a Box inside _passes.
+        let pass = &*(user_data as *const T);
+        // SAFETY: manager is valid for callback duration (owned by C++ PM infrastructure).
+        let manager = LoopAnalysisManager::from_raw(manager);
+        pass.run_pass(header, &manager)
+    }));
+    match result {
+        Ok(pa) => preserved_to_c(pa),
+        Err(_) => {
+            eprintln!("llvm-pm: loop pass panicked; treating as PreservedAnalyses::None");
+            preserved_to_c(PreservedAnalyses::None)
+        }
+    }
 }
 
 // =========================================================================
@@ -861,7 +952,7 @@ pub(crate) unsafe extern "C" fn loop_pass_trampoline<T: LlvmLoopPass>(
 /// ensuring the target machine outlives the pass manager.
 pub struct ModulePassManager<'a> {
     raw: llvm_pm_sys::LlvmPmPassManagerRef,
-    _passes: Vec<Box<dyn std::any::Any>>,
+    _passes: Vec<Box<dyn std::any::Any + Send>>,
     _phantom: PhantomData<&'a ()>,
 }
 
@@ -1049,7 +1140,7 @@ impl<'a> ModulePassManager<'a> {
     /// the pipeline.
     pub fn add_pass<P>(&mut self, pass: P)
     where
-        P: LlvmModulePass + 'static,
+        P: LlvmModulePass + Send + 'static,
     {
         let mut boxed = Box::new(pass);
         let ptr = &mut *boxed as *mut P as *mut c_void;
@@ -1068,7 +1159,7 @@ impl<'a> ModulePassManager<'a> {
     /// function in each SCC.
     pub fn add_cgscc_pass<P>(&mut self, pass: P)
     where
-        P: LlvmCgsccPass + 'static,
+        P: LlvmCgsccPass + Send + 'static,
     {
         let mut boxed = Box::new(pass);
         let ptr = &mut *boxed as *mut P as *mut c_void;
@@ -1087,7 +1178,7 @@ impl<'a> ModulePassManager<'a> {
     /// runs on each function within the CGSCC traversal order.
     pub fn add_function_pass_via_cgscc<P>(&mut self, pass: P)
     where
-        P: LlvmFunctionPass + 'static,
+        P: LlvmFunctionPass + Send + 'static,
     {
         let mut boxed = Box::new(pass);
         let ptr = &mut *boxed as *mut P as *mut c_void;
@@ -1109,7 +1200,7 @@ impl<'a> ModulePassManager<'a> {
     /// The pass is wrapped with `Module → CGSCC → Function → Loop` adaptors.
     pub fn add_loop_pass_via_cgscc<P>(&mut self, pass: P)
     where
-        P: LlvmLoopPass + 'static,
+        P: LlvmLoopPass + Send + 'static,
     {
         let mut boxed = Box::new(pass);
         let ptr = &mut *boxed as *mut P as *mut c_void;
@@ -1142,6 +1233,10 @@ impl<'a> ModulePassManager<'a> {
 
 impl<'a> Drop for ModulePassManager<'a> {
     fn drop(&mut self) {
+        // SAFETY: self.raw is a valid PM handle until dispose.
+        let cgam = unsafe { llvm_pm_sys::llvm_pm_cgam_ptr(self.raw) } as usize;
+        let lam = unsafe { llvm_pm_sys::llvm_pm_lam_ptr(self.raw) } as usize;
+        clear_analysis_state(cgam, lam);
         // SAFETY: self.raw is a valid PM handle, and Drop runs at most once.
         // The C++ side is disposed first; _passes (stored Box<dyn Any>) are
         // dropped automatically afterward.
@@ -1173,7 +1268,7 @@ unsafe impl<'a> Send for ModulePassManager<'a> {}
 /// ensuring the target machine outlives the pass manager.
 pub struct FunctionPassManager<'a> {
     raw: llvm_pm_sys::LlvmPmPassManagerRef,
-    _passes: Vec<Box<dyn std::any::Any>>,
+    _passes: Vec<Box<dyn std::any::Any + Send>>,
     _phantom: PhantomData<&'a ()>,
 }
 
@@ -1256,7 +1351,7 @@ impl<'a> FunctionPassManager<'a> {
     /// the pipeline.
     pub fn add_pass<P>(&mut self, pass: P)
     where
-        P: LlvmFunctionPass + 'static,
+        P: LlvmFunctionPass + Send + 'static,
     {
         let mut boxed = Box::new(pass);
         let ptr = &mut *boxed as *mut P as *mut c_void;
@@ -1279,7 +1374,7 @@ impl<'a> FunctionPassManager<'a> {
     /// loop header basic block.
     pub fn add_loop_pass<P>(&mut self, pass: P)
     where
-        P: traits::LlvmLoopPass + 'static,
+        P: traits::LlvmLoopPass + Send + 'static,
     {
         let mut boxed = Box::new(pass);
         let ptr = &mut *boxed as *mut P as *mut c_void;
@@ -1309,6 +1404,10 @@ impl<'a> FunctionPassManager<'a> {
 
 impl<'a> Drop for FunctionPassManager<'a> {
     fn drop(&mut self) {
+        // SAFETY: self.raw is a valid PM handle until dispose.
+        let cgam = unsafe { llvm_pm_sys::llvm_pm_cgam_ptr(self.raw) } as usize;
+        let lam = unsafe { llvm_pm_sys::llvm_pm_lam_ptr(self.raw) } as usize;
+        clear_analysis_state(cgam, lam);
         // SAFETY: self.raw is a valid PM handle, and Drop runs at most once.
         // The C++ side is disposed first; _passes (stored Box<dyn Any>) are
         // dropped automatically afterward.
@@ -1340,7 +1439,7 @@ unsafe impl<'a> Send for FunctionPassManager<'a> {}
 /// ensuring the target machine outlives the pass manager.
 pub struct CGSCCPassManager<'a> {
     raw: llvm_pm_sys::LlvmPmPassManagerRef,
-    _passes: Vec<Box<dyn std::any::Any>>,
+    _passes: Vec<Box<dyn std::any::Any + Send>>,
     _phantom: PhantomData<&'a ()>,
 }
 
@@ -1388,7 +1487,7 @@ impl<'a> CGSCCPassManager<'a> {
     /// in each SCC.
     pub fn add_pass<P>(&mut self, pass: P)
     where
-        P: LlvmCgsccPass + 'static,
+        P: LlvmCgsccPass + Send + 'static,
     {
         let mut boxed = Box::new(pass);
         let ptr = &mut *boxed as *mut P as *mut c_void;
@@ -1407,7 +1506,7 @@ impl<'a> CGSCCPassManager<'a> {
     /// runs on each function within the CGSCC traversal order.
     pub fn add_function_pass<P>(&mut self, pass: P)
     where
-        P: LlvmFunctionPass + 'static,
+        P: LlvmFunctionPass + Send + 'static,
     {
         let mut boxed = Box::new(pass);
         let ptr = &mut *boxed as *mut P as *mut c_void;
@@ -1429,7 +1528,7 @@ impl<'a> CGSCCPassManager<'a> {
     /// The pass is wrapped with `Module → CGSCC → Function → Loop` adaptors.
     pub fn add_loop_pass<P>(&mut self, pass: P)
     where
-        P: LlvmLoopPass + 'static,
+        P: LlvmLoopPass + Send + 'static,
     {
         let mut boxed = Box::new(pass);
         let ptr = &mut *boxed as *mut P as *mut c_void;
@@ -1462,6 +1561,10 @@ impl<'a> CGSCCPassManager<'a> {
 
 impl<'a> Drop for CGSCCPassManager<'a> {
     fn drop(&mut self) {
+        // SAFETY: self.raw is a valid PM handle until dispose.
+        let cgam = unsafe { llvm_pm_sys::llvm_pm_cgam_ptr(self.raw) } as usize;
+        let lam = unsafe { llvm_pm_sys::llvm_pm_lam_ptr(self.raw) } as usize;
+        clear_analysis_state(cgam, lam);
         // SAFETY: self.raw is a valid PM handle, and Drop runs at most once.
         // The C++ side is disposed first; _passes (stored Box<dyn Any>) are
         // dropped automatically afterward.
