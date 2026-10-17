@@ -166,11 +166,11 @@ fn find_llvm_msvc() -> LlvmInfo {
     }
 }
 
-/// Try versioned llvm-config names (llvm-config-22 .. llvm-config-10),
+/// Try versioned llvm-config names (llvm-config-23 .. llvm-config-10),
 /// falling back to plain `llvm-config`.
 fn detect_llvm_config_unix() -> String {
     for ver in &[
-        "22", "21", "20", "19", "18", "17", "16", "15", "14", "13", "12", "11", "10",
+        "23", "22", "21", "20", "19", "18", "17", "16", "15", "14", "13", "12", "11", "10",
     ] {
         let candidate = format!("llvm-config-{}", ver);
         if Command::new(&candidate).arg("--version").output().is_ok() {

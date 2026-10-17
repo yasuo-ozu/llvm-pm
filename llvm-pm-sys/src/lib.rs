@@ -33,6 +33,8 @@ pub use llvm_sys_201 as llvm_sys;
 pub use llvm_sys_211 as llvm_sys;
 #[cfg(feature = "llvm22-1")]
 pub use llvm_sys_221 as llvm_sys;
+#[cfg(feature = "llvm23-1")]
+pub use llvm_sys_231 as llvm_sys;
 
 // Import LLVM types from llvm-sys. These are used by the bindgen-generated
 // function signatures below (LLVM types are blocklisted from bindgen).
