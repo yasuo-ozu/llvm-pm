@@ -129,10 +129,54 @@ static LlvmPmOptimizationLevel mapOptLevel(LlvmPmOptLevel level) {
     case LlvmPmOptLevel_O1: return LlvmPmOptimizationLevel::O1;
     case LlvmPmOptLevel_O2: return LlvmPmOptimizationLevel::O2;
     case LlvmPmOptLevel_O3: return LlvmPmOptimizationLevel::O3;
+#if LLVM_VERSION_MAJOR >= 23
+    // LLVM 23 removed Os/Oz: they are O2 plus the optsize/minsize function
+    // attributes, which withSizeAttrs() adds.
+    case LlvmPmOptLevel_Os: return LlvmPmOptimizationLevel::O2;
+    case LlvmPmOptLevel_Oz: return LlvmPmOptimizationLevel::O2;
+#else
     case LlvmPmOptLevel_Os: return LlvmPmOptimizationLevel::Os;
     case LlvmPmOptLevel_Oz: return LlvmPmOptimizationLevel::Oz;
+#endif
     default: return LlvmPmOptimizationLevel::O2;
     }
+}
+
+#if LLVM_VERSION_MAJOR >= 23
+/// Marks every function definition optsize (Os) or optsize+minsize (Oz), as
+/// clang does for -Os/-Oz. optnone functions are skipped: the verifier rejects
+/// optnone combined with optsize/minsize.
+struct LlvmPmSizeAttrPass : PassInfoMixin<LlvmPmSizeAttrPass> {
+    bool MinSize;
+    explicit LlvmPmSizeAttrPass(bool MinSize) : MinSize(MinSize) {}
+
+    PreservedAnalyses run(Module &M, ModuleAnalysisManager &) {
+        for (Function &F : M) {
+            if (F.isDeclaration() || F.hasFnAttribute(Attribute::OptimizeNone))
+                continue;
+            F.addFnAttr(Attribute::OptimizeForSize);
+            if (MinSize)
+                F.addFnAttr(Attribute::MinSize);
+        }
+        return PreservedAnalyses::none();
+    }
+};
+#endif
+
+/// For Os/Oz on LLVM 23+, run LlvmPmSizeAttrPass ahead of the O2 pipeline;
+/// otherwise return the pipeline unchanged.
+static ModulePassManager withSizeAttrs(ModulePassManager Pipeline, LlvmPmOptLevel level) {
+#if LLVM_VERSION_MAJOR >= 23
+    if (level == LlvmPmOptLevel_Os || level == LlvmPmOptLevel_Oz) {
+        ModulePassManager MPM;
+        MPM.addPass(LlvmPmSizeAttrPass(level == LlvmPmOptLevel_Oz));
+        MPM.addPass(std::move(Pipeline));
+        return MPM;
+    }
+#else
+    (void)level;
+#endif
+    return Pipeline;
 }
 
 /// Dereference an optional LlvmPmOptionsRef, returning a default if NULL.
@@ -365,7 +409,7 @@ extern "C" LlvmPmPassManagerRef llvm_pm_create_with_opt_level(
         // constructed empty ModulePassManager.
 #endif
     } else {
-        *pm->MPM = pm->PB->buildPerModuleDefaultPipeline(opt);
+        *pm->MPM = withSizeAttrs(pm->PB->buildPerModuleDefaultPipeline(opt), level);
     }
 
     *err_msg = nullptr;
@@ -402,7 +446,7 @@ extern "C" LlvmPmPassManagerRef llvm_pm_create_lto(
 
     pm->MPM = std::make_unique<ModulePassManager>();
 #if LLVM_VERSION_MAJOR >= 12
-    *pm->MPM = pm->PB->buildLTODefaultPipeline(opt, /*ExportSummary=*/nullptr);
+    *pm->MPM = withSizeAttrs(pm->PB->buildLTODefaultPipeline(opt, /*ExportSummary=*/nullptr), level);
 #else
     // LLVM 10/11 take a leading bool DebugLogging argument.
     *pm->MPM = pm->PB->buildLTODefaultPipeline(opt, pm->DebugLogging, /*ExportSummary=*/nullptr);
@@ -423,7 +467,7 @@ extern "C" LlvmPmPassManagerRef llvm_pm_create_lto_pre_link(
 
     pm->MPM = std::make_unique<ModulePassManager>();
 #if LLVM_VERSION_MAJOR >= 12
-    *pm->MPM = pm->PB->buildLTOPreLinkDefaultPipeline(opt);
+    *pm->MPM = withSizeAttrs(pm->PB->buildLTOPreLinkDefaultPipeline(opt), level);
 #else
     *pm->MPM = pm->PB->buildLTOPreLinkDefaultPipeline(opt, pm->DebugLogging);
 #endif
@@ -443,7 +487,7 @@ extern "C" LlvmPmPassManagerRef llvm_pm_create_thin_lto_pre_link(
 
     pm->MPM = std::make_unique<ModulePassManager>();
 #if LLVM_VERSION_MAJOR >= 12
-    *pm->MPM = pm->PB->buildThinLTOPreLinkDefaultPipeline(opt);
+    *pm->MPM = withSizeAttrs(pm->PB->buildThinLTOPreLinkDefaultPipeline(opt), level);
 #else
     // LLVM 10/11: (OptimizationLevel, bool DebugLogging), no import summary param.
     *pm->MPM = pm->PB->buildThinLTOPreLinkDefaultPipeline(opt, pm->DebugLogging);
@@ -685,7 +729,15 @@ extern "C" unsigned llvm_pm_plugin_api_version(void) {
 
 /// Reverse map LLVM's OptimizationLevel to our C enum.
 static LlvmPmOptLevel reverseMapOptLevel(LlvmPmOptimizationLevel opt) {
-#if LLVM_VERSION_MAJOR >= 11
+#if LLVM_VERSION_MAJOR >= 23
+    // OptimizationLevel is a plain enum of O0..O3 since LLVM 23 (no Os/Oz).
+    switch (opt) {
+    case LlvmPmOptimizationLevel::O0: return LlvmPmOptLevel_O0;
+    case LlvmPmOptimizationLevel::O1: return LlvmPmOptLevel_O1;
+    case LlvmPmOptimizationLevel::O3: return LlvmPmOptLevel_O3;
+    default: return LlvmPmOptLevel_O2;
+    }
+#elif LLVM_VERSION_MAJOR >= 11
     unsigned speed = opt.getSpeedupLevel();
     unsigned size = opt.getSizeLevel();
     if (speed == 0 && size == 0) return LlvmPmOptLevel_O0;
