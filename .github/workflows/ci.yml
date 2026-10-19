@@ -151,13 +151,6 @@ jobs:
           # libLLVM.so/.dylib), so it cannot link there. The feature still builds for
           # users whose LLVM provides a shared library.
           echo "LLVM_FEATURES=llvm${LLVM_MAJOR}-${LLVM_MINOR}" >> "$GITHUB_ENV"
-          # No inkwell release has `llvm23-1` yet, so only llvm-pm-sys exposes
-          # LLVM 23; test that crate alone until the main crate can follow.
-          if [ "$LLVM_MAJOR" -ge 23 ]; then
-            echo "CARGO_PACKAGES=-p llvm-pm-sys" >> "$GITHUB_ENV"
-          else
-            echo "CARGO_PACKAGES=--workspace" >> "$GITHUB_ENV"
-          fi
 
       # Cache only the downloaded crate registry (small, shared), NOT ~/.cargo/git
       # or target/. The whole repo shares a 10 GB Actions cache budget; the
@@ -176,11 +169,11 @@ jobs:
 
       - name: Build
         shell: bash
-        run: cargo build $CARGO_PACKAGES --no-default-features --features $LLVM_FEATURES --verbose
+        run: cargo build --workspace --no-default-features --features $LLVM_FEATURES --verbose
 
       - name: Test
         shell: bash
-        run: cargo test $CARGO_PACKAGES --no-default-features --features $LLVM_FEATURES --verbose
+        run: cargo test --workspace --no-default-features --features $LLVM_FEATURES --verbose
 
       - name: Run example
         shell: bash
@@ -189,8 +182,7 @@ jobs:
         # correct result. This is an upstream LLVM-10 JIT issue on the v142/UCRT
         # runtime (LLVM 11+ are fine with the identical build) and does not occur in
         # the non-JIT test suite, so skip just the example for that one cell.
-        # The example needs the main crate, so it is skipped for sys-only LLVMs.
-        if: ${{ env.CARGO_PACKAGES == '--workspace' && !(matrix.platform.label == 'Windows (MSVC)' && matrix.llvm == '10.0.1') }}
+        if: ${{ !(matrix.platform.label == 'Windows (MSVC)' && matrix.llvm == '10.0.1') }}
         run: cargo run --example all_pass_kinds --no-default-features --features $LLVM_FEATURES --verbose
 
   coverage:
