@@ -86,8 +86,7 @@ llvm-plugin = { version = "0.6", default-features = false, optional = true }
 # every run — the version bound here is what keeps the plugin path consistent.
 inkwell_05 = { package = "inkwell", version = "0.5", default-features = false, optional = true }
 inkwell_09 = { package = "inkwell", version = ">=0.9, <0.11", default-features = false, optional = true }
-# LLVM 23.1 support (TheDan64/inkwell#702) is on inkwell master but not yet in a
-# crates.io release (latest is 0.10.0). Kept separate from `inkwell_09` because the
-# next release (0.11.0) carries breaking API changes. Replace the git pin with
-# `version = "0.11"` once it is published; crates.io rejects git dependencies.
-inkwell_11 = { package = "inkwell", git = "https://github.com/TheDan64/inkwell", rev = "3cf0506a4167f149b8fb56fb9714571f927a2306", default-features = false, optional = true }
+# LLVM 23.1 support (TheDan64/inkwell#702) ships in inkwell 0.11. Kept separate
+# from `inkwell_09` because 0.11 carries breaking API changes, so LLVM 18-22 users
+# stay on 0.9/0.10.
+inkwell_11 = { package = "inkwell", version = "0.11", default-features = false, optional = true }

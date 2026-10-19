@@ -30,10 +30,9 @@ and has compatibility with [llvm-plugin](https://crates.io/crates/llvm-plugin)
 | `llvm20-1` | 20.x | No |
 | `llvm21-1` | 21.x | No |
 | `llvm22-1` | 22.x | No |
-| `llvm23-1` [^2] | 23.x | No |
+| `llvm23-1` | 23.x | No |
 
 [^1]: should specify `llvm-plugin-crate` feature flag
-[^2]: uses inkwell from git until a crates.io release includes LLVM 23.1 support ([TheDan64/inkwell#702](https://github.com/TheDan64/inkwell/pull/702))
 
 ## Usage
 
