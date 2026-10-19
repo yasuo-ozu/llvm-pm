@@ -72,6 +72,8 @@ pub extern crate inkwell_05 as inkwell;
     feature = "llvm22-1"
 ))]
 pub extern crate inkwell_09 as inkwell;
+#[cfg(feature = "llvm23-1")]
+pub extern crate inkwell_11 as inkwell;
 
 pub mod traits;
 
@@ -110,7 +112,8 @@ type AnalysisKey = *const u8;
         feature = "llvm19-1",
         feature = "llvm20-1",
         feature = "llvm21-1",
-        feature = "llvm22-1"
+        feature = "llvm22-1",
+        feature = "llvm23-1"
     )
 ))]
 compile_error!(

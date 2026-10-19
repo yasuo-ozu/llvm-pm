@@ -89,7 +89,8 @@ fn build_load_i32<'ctx>(
     feature = "llvm19-1",
     feature = "llvm20-1",
     feature = "llvm21-1",
-    feature = "llvm22-1"
+    feature = "llvm22-1",
+    feature = "llvm23-1"
 ))]
 fn build_load_i32<'ctx>(
     b: &inkwell::builder::Builder<'ctx>,
@@ -258,7 +259,8 @@ fn build_demo_module() -> inkwell::module::Module<'static> {
             feature = "llvm19-1",
             feature = "llvm20-1",
             feature = "llvm21-1",
-            feature = "llvm22-1"
+            feature = "llvm22-1",
+            feature = "llvm23-1"
         ))]
         {
             value.unwrap_basic().into_int_value()
@@ -287,7 +289,8 @@ fn build_demo_module() -> inkwell::module::Module<'static> {
             feature = "llvm19-1",
             feature = "llvm20-1",
             feature = "llvm21-1",
-            feature = "llvm22-1"
+            feature = "llvm22-1",
+            feature = "llvm23-1"
         ))]
         {
             value.unwrap_basic().into_int_value()
